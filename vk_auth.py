@@ -157,6 +157,7 @@ def get_vk_auth_code(
     rucaptcha_key: str = "",
     captcha_sid: str = "",
     captcha_key: str = "",
+    proxy: str = "",
 ) -> dict:
     """
     Получить VK ID authorization code для приложения Twinby.
@@ -179,11 +180,14 @@ def get_vk_auth_code(
     log: list[str] = []
 
     try:
-        with httpx.Client(
-            follow_redirects=False,
-            timeout=30,
-            headers={"User-Agent": UA_ANDROID},
-        ) as s:
+        client_kw: dict = {
+            "follow_redirects": False,
+            "timeout": 30,
+            "headers": {"User-Agent": UA_ANDROID},
+        }
+        if proxy:
+            client_kw["proxy"] = proxy
+        with httpx.Client(**client_kw) as s:
             # ═══════════════════════════════════════════════════════════
             # Шаг 1: VK password grant → access_token + session cookies
             # ═══════════════════════════════════════════════════════════
@@ -222,6 +226,7 @@ def get_vk_auth_code(
                             return get_vk_auth_code(
                                 login, password, rucaptcha_key,
                                 captcha_sid=sid, captcha_key=solution,
+                                proxy=proxy,
                             )
                         else:
                             log.append("  Captcha solve FAILED")
@@ -424,6 +429,7 @@ def twinby_auth_v3(
     device_id: str,
     state: str,
     redirect_uri: str = TWINBY_REDIRECT_URI,
+    proxy: str = "",
 ) -> dict:
     """
     Авторизация в Twinby через v3 endpoint.
@@ -444,16 +450,21 @@ def twinby_auth_v3(
     }
 
     try:
-        resp = httpx.post(
-            "https://twinby.ru/api/auth/v3/oauth/by-token",
-            json=body,
-            headers={
+        post_kw: dict = {
+            "json": body,
+            "headers": {
                 "User-Agent": UA_DART,
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "Host": "twinby.ru",
             },
-            timeout=30,
+            "timeout": 30,
+        }
+        if proxy:
+            post_kw["proxy"] = proxy
+        resp = httpx.post(
+            "https://twinby.ru/api/auth/v3/oauth/by-token",
+            **post_kw,
         )
         if resp.status_code >= 400:
             return {"ok": False, "error": f"Twinby auth v3: {resp.status_code} {resp.text[:300]}"}
@@ -470,7 +481,7 @@ def twinby_auth_v3(
 # Полный цикл: VK login → code → Twinby JWT
 # ---------------------------------------------------------------------------
 
-def full_auth(login: str, password: str, rucaptcha_key: str = "") -> dict:
+def full_auth(login: str, password: str, rucaptcha_key: str = "", proxy: str = "") -> dict:
     """
     Полный цикл авторизации: VK login → code → Twinby JWT.
 
@@ -479,7 +490,7 @@ def full_auth(login: str, password: str, rucaptcha_key: str = "") -> dict:
               или {"ok": False, "error": "...", "log": [...]}
     """
     # Шаг 1: получить VK auth code
-    vk_result = get_vk_auth_code(login, password, rucaptcha_key)
+    vk_result = get_vk_auth_code(login, password, rucaptcha_key, proxy=proxy)
     if not vk_result.get("ok"):
         return vk_result
 
@@ -490,6 +501,7 @@ def full_auth(login: str, password: str, rucaptcha_key: str = "") -> dict:
         device_id=vk_result["device_id"],
         state=vk_result["state"],
         redirect_uri=vk_result["redirect_uri"],
+        proxy=proxy,
     )
 
     log = vk_result.get("log", [])

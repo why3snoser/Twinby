@@ -103,6 +103,15 @@ legend{padding:0 6px;font-size:13px;color:var(--accent);font-weight:600}
   </fieldset>
 
   <fieldset>
+    <legend>Прокси</legend>
+    <label>Пул прокси (формат: ip:port:user:pass, по одному на строку)</label>
+    <textarea id="proxyPool" rows="4" oninput="saveSettings()" placeholder="74.81.81.81:10000:user:pass"></textarea>
+    <div class="flex mt" style="gap:12px">
+      <span class="text-sm text-muted" id="proxyPoolStats"></span>
+    </div>
+  </fieldset>
+
+  <fieldset>
     <legend>Профиль</legend>
     <div class="row">
       <div><label>Имя</label><input type="text" id="sName" oninput="saveSettings()"></div>
@@ -350,7 +359,9 @@ function applySettings() {
   document.getElementById('sSmoking').value = s.smoking || '';
   document.getElementById('sReligion').value = s.religion || '';
   document.getElementById('sRucaptchaKey').value = s.rucaptcha_key || '';
+  document.getElementById('proxyPool').value = s.proxy_pool || '';
   updateVkStats();
+  updateProxyStats();
 }
 
 function gatherSettings() {
@@ -372,6 +383,7 @@ function gatherSettings() {
     smoking: document.getElementById('sSmoking').value,
     religion: document.getElementById('sReligion').value,
     rucaptcha_key: document.getElementById('sRucaptchaKey').value,
+    proxy_pool: document.getElementById('proxyPool').value,
     selected_cities: SETTINGS.selected_cities || []
   };
 }
@@ -380,6 +392,7 @@ let _saveTimer = null;
 function saveSettings() {
   SETTINGS = gatherSettings();
   updateVkStats();
+  updateProxyStats();
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -416,6 +429,23 @@ function getUsedVkTokens() {
     }
   }
   return used;
+}
+
+function parseProxyPool() {
+  return (SETTINGS.proxy_pool||'').split('\n').filter(l=>l.trim()).map(l=>l.trim());
+}
+let _proxyIdx = 0;
+function getNextProxy() {
+  const pool = parseProxyPool();
+  if (!pool.length) return '';
+  const p = pool[_proxyIdx % pool.length];
+  _proxyIdx++;
+  return p;
+}
+function updateProxyStats() {
+  const lines = parseProxyPool();
+  const el = document.getElementById('proxyPoolStats');
+  if (el) el.textContent = `Всего прокси: ${lines.length}`;
 }
 
 function getFreeVk(count) {
@@ -627,7 +657,7 @@ function applyFilter(preset, idx) {
   if (!acc?.jwt) { alert('Нет JWT'); return; }
   logMsg('Применяю фильтр: ' + (acc.city||''));
   fetch('/apply-preset', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({token:acc.jwt, preset:{
+    body: JSON.stringify({token:acc.jwt, proxy:acc.proxy||'', preset:{
       latitude:acc.latitude, longitude:acc.longitude, city_name:acc.city,
       distance:SETTINGS.distance||100, min_age:SETTINGS.min_age||18,
       max_age:SETTINGS.max_age||35, filter_gender:SETTINGS.filter_gender||'f'
@@ -662,13 +692,15 @@ async function registerPreset(presetName) {
   for (let i = 0; i < need; i++) {
     const vk = freeVk[i];
     const city = picked[i];
-    logMsg(`[${i+1}/${need}] ${city.name} — VK ${vk.id}...`);
+    const proxy = getNextProxy();
+    logMsg(`[${i+1}/${need}] ${city.name} — VK ${vk.id} — proxy ${proxy||'нет'}...`);
 
     try {
       const resp = await fetch('/api/register-account', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
           vk_token:vk.token, vk_id:vk.id, vk_pass:vk.pass,
+          proxy: proxy,
           name:SETTINGS.name, birthday:SETTINGS.birthday,
           gender:SETTINGS.gender, about:SETTINGS.about,
           latitude:city.lat, longitude:city.lon, city_name:city.name,
@@ -682,10 +714,12 @@ async function registerPreset(presetName) {
       if (d.log) logMsg(d.log.trim());
       if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
       logMsg(`  JWT получен (${d.user_id})`);
+      const accProxy = d.proxy || proxy;
 
       const accObj = {
         jwt:d.jwt, user_id:d.user_id, name:d.name||SETTINGS.name,
         vk_id:vk.id, vk_pass:vk.pass, vk_token:vk.token,
+        proxy: accProxy,
         city:city.name, latitude:city.lat, longitude:city.lon,
         verified:false, premium:false, premium_expire:null, likes_done:0
       };
@@ -699,6 +733,7 @@ async function registerPreset(presetName) {
           const fd = new FormData();
           fd.append('token', d.jwt);
           fd.append('order', pi + 1);
+          fd.append('proxy', accProxy);
           fd.append('photos', shuffled[pi].blob, shuffled[pi].name || 'photo.jpg');
           try {
             const pr = await fetch('/upload-photo', {method:'POST', body:fd});
@@ -718,6 +753,7 @@ async function registerPreset(presetName) {
           logMsg(`  Верификация (попытка ${vi+1})...`);
           const vfd = new FormData();
           vfd.append('token', d.jwt);
+          vfd.append('proxy', accProxy);
           vfd.append('video', VIDEOS[vi].blob);
           try {
             const vr = await fetch('/api/verify-video', {method:'POST', body:vfd});
@@ -731,7 +767,7 @@ async function registerPreset(presetName) {
       // Check status
       try {
         const sr = await fetch('/api/check-status', {method:'POST',
-          headers:{'Content-Type':'application/json'}, body:JSON.stringify({jwt:d.jwt})});
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify({jwt:d.jwt, proxy:accProxy})});
         const sd = await sr.json();
         if (sd.ok) { accObj.verified=sd.verified; accObj.premium=sd.premium; accObj.premium_expire=sd.premium_expire; }
       } catch(e) {}
@@ -773,7 +809,7 @@ async function autoLikePreset(presetName) {
     try {
       const resp = await fetch('/api/auto-like', {method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({token:acc.jwt, max_rounds:50})});
+        body: JSON.stringify({token:acc.jwt, max_rounds:50, proxy:acc.proxy||''})});
       const data = await resp.json();
       if (data.ok) {
         acc.likes_done = (acc.likes_done||0) + (data.liked||0);
@@ -795,7 +831,7 @@ async function checkStatusPreset(presetName) {
     if (!acc.jwt) continue;
     try {
       const resp = await fetch('/api/check-status', {method:'POST',
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify({jwt:acc.jwt})});
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({jwt:acc.jwt, proxy:acc.proxy||''})});
       const d = await resp.json();
       if (d.ok) {
         acc.verified=d.verified; acc.premium=d.premium; acc.premium_expire=d.premium_expire;
@@ -824,11 +860,12 @@ async function recoverPreset(presetName) {
 
   for (let i = 0; i < freeVk.length; i++) {
     const vk = freeVk[i];
-    logMsg(`[${i+1}/${freeVk.length}] VK ${vk.id}...`);
+    const proxy = getNextProxy();
+    logMsg(`[${i+1}/${freeVk.length}] VK ${vk.id} — proxy ${proxy||'нет'}...`);
     try {
       const resp = await fetch('/api/recover-account', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({vk_token: vk.token, vk_id: vk.id, vk_pass: vk.pass})
+        body: JSON.stringify({vk_token: vk.token, vk_id: vk.id, vk_pass: vk.pass, proxy: proxy})
       });
       const d = await resp.json();
       if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
@@ -844,9 +881,11 @@ async function recoverPreset(presetName) {
         if (best) cityName = best.name;
       }
 
+      const accProxy = d.proxy || proxy;
       const accObj = {
         jwt: d.jwt, user_id: d.user_id, name: d.name||'',
         vk_id: vk.id, vk_pass: vk.pass, vk_token: vk.token,
+        proxy: accProxy,
         city: cityName, latitude: d.latitude, longitude: d.longitude,
         verified: d.verified, premium: d.premium,
         premium_expire: d.premium_expire, likes_done: 0

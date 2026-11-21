@@ -726,67 +726,93 @@ def _save_accounts(data: dict):
 
 ACCOUNTS: dict[str, dict] = _load_accounts()
 
+# ---------------------------------------------------------------------------
+# Прокси-пул: парсинг и выделение
+# ---------------------------------------------------------------------------
+_proxy_index = 0  # round-robin counter
+
+def _parse_proxy_pool(settings: dict | None = None) -> list[str]:
+    """
+    Парсит proxy_pool из настроек.
+    Формат строки: ip:port:user:pass  (user может содержать ';' и другие символы).
+    Возвращает список строк вида "http://user:pass@ip:port".
+    """
+    if settings is None:
+        settings = _load_settings()
+    raw = settings.get("proxy_pool", "")
+    result = []
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(":")
+        if len(parts) >= 4:
+            ip = parts[0]
+            port = parts[1]
+            user = parts[2]
+            pwd = ":".join(parts[3:])  # пароль может содержать ':'
+            result.append(f"http://{user}:{pwd}@{ip}:{port}")
+        elif len(parts) == 2:
+            # ip:port без авторизации
+            result.append(f"http://{parts[0]}:{parts[1]}")
+    return result
+
+
+def _get_next_proxy(settings: dict | None = None) -> str:
+    """Round-robin: следующий прокси из пула. Пустая строка если пул пуст."""
+    global _proxy_index
+    pool = _parse_proxy_pool(settings)
+    if not pool:
+        return ""
+    proxy = pool[_proxy_index % len(pool)]
+    _proxy_index += 1
+    return proxy
+
+
+def _make_proxied_httpx_client(proxy: str = "", **extra) -> "httpx.Client":
+    """Создаёт httpx.Client с прокси (если задан) и стандартными заголовками Twinby."""
+    import httpx as _httpx
+    kw: dict = {
+        "timeout": 30,
+        "headers": {"User-Agent": tw.UA, "Accept": "application/json"},
+        **extra,
+    }
+    if proxy:
+        kw["proxy"] = proxy
+    return _httpx.Client(**kw)
+
 
 def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
-                     rucaptcha_key: str = "") -> dict:
+                     rucaptcha_key: str = "", proxy: str = "") -> dict:
     """
-    Универсальная авторизация VK → Twinby JWT.
-
-    Приоритет:
-      1. Если есть vk_login + vk_pass → v3 (PKCE) через vk_auth модуль.
-      2. Если только vk_token → fallback на v2 (legacy, онбординг может не работать).
+    Авторизация VK → Twinby JWT через v3 PKCE.
+    Требует vk_login + vk_pass. proxy — строка вида "http://user:pass@ip:port".
 
     Returns: {"ok": True, "jwt": "...", "log": [...]}
              или {"ok": False, "error": "...", "log": [...]}
     """
-    import httpx
     log = []
 
-    # ---- Стратегия 1: v3 через VK OAuth PKCE (если есть пароль) ----
-    if vk_login and vk_pass:
-        log.append(f"[AUTH] v3 PKCE: login={vk_login[:4]}***")
-        result = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key)
-        if result.get("ok"):
-            log.extend(result.get("log", []))
-            log.append(f"[AUTH] v3 OK: JWT={result['jwt'][:20]}...")
-            return {"ok": True, "jwt": result["jwt"], "log": log,
-                    "refresh_token": result.get("refresh_token", "")}
-        else:
-            log.extend(result.get("log", []))
-            err = result.get("error", "unknown")
-            log.append(f"[AUTH] v3 FAILED: {err}")
-            # Если капча — пробрасываем наверх
-            if err == "need_captcha":
-                return result
-            # Пробуем fallback на v2 если есть vk_token
-            if vk_token:
-                log.append("[AUTH] Fallback на v2 с токеном...")
-            else:
-                return {"ok": False, "error": f"VK auth v3 failed: {err}", "log": log}
+    if not vk_login or not vk_pass:
+        return {"ok": False, "error": "Нужен VK логин и пароль (v3 PKCE)", "log": log}
 
-    # ---- Стратегия 2: v2 (legacy) через VK access token ----
-    if vk_token:
-        log.append(f"[AUTH] v2 legacy: token={vk_token[:20]}...")
-        try:
-            resp = httpx.post(
-                f"{tw.BASE}{AUTH_VK_V2_PATH}",
-                json={"provider": "vk", "token": vk_token},
-                headers={"User-Agent": tw.UA, "Accept": "application/json",
-                         "Content-Type": "application/json"},
-                timeout=30,
-            )
-            if resp.status_code >= 400:
-                return {"ok": False, "error": f"Auth v2: {resp.status_code} {resp.text[:300]}", "log": log}
-            rd = resp.json()
-            jwt_token = rd.get("accessToken", "")
-            if not jwt_token:
-                return {"ok": False, "error": f"Нет accessToken: {json.dumps(rd, ensure_ascii=False)[:300]}", "log": log}
-            log.append(f"[AUTH] v2 OK: JWT={jwt_token[:20]}... (⚠️ онбординг может не работать)")
-            return {"ok": True, "jwt": jwt_token, "log": log, "v2_warning": True}
-        except Exception as e:
-            return {"ok": False, "error": f"Auth v2 exception: {e}", "log": log}
+    log.append(f"[AUTH] v3 PKCE: login={vk_login[:4]}***")
+    if proxy:
+        log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
 
-    return {"ok": False, "error": "Нет VK логина/пароля и нет токена", "log": log}
+    result = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key, proxy=proxy)
+    if result.get("ok"):
+        log.extend(result.get("log", []))
+        log.append(f"[AUTH] v3 OK: JWT={result['jwt'][:20]}...")
+        return {"ok": True, "jwt": result["jwt"], "log": log,
+                "refresh_token": result.get("refresh_token", "")}
+    else:
+        log.extend(result.get("log", []))
+        err = result.get("error", "unknown")
+        log.append(f"[AUTH] v3 FAILED: {err}")
+        if err == "need_captcha":
+            return result
+        return {"ok": False, "error": f"VK auth v3 failed: {err}", "log": log}
 
 
 def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
@@ -1532,8 +1558,8 @@ def send_liveness(c, video_file, tee) -> None:
     tee(f"❌ Верификация НЕ пройдена после {max_attempts} попыток")
 
 
-def _make_web_client(token: str, dry: bool, tee):
-    """Создаёт WebClient с логированием."""
+def _make_web_client(token: str, dry: bool, tee, proxy: str = ""):
+    """Создаёт WebClient с логированием. Если proxy задан — все запросы через него."""
     class WebClient(tw.Client):
         def call(self, method, path, **kw):
             shown = path + ("?" + "&".join(f"{k}={v}" for k, v in kw["params"].items()) if kw.get("params") else "")
@@ -1548,6 +1574,14 @@ def _make_web_client(token: str, dry: bool, tee):
     if "refreshToken" in token or '"' in token:
         raise RuntimeError("В поле токена попал лишний хвост (refreshToken). Вставь только первый JWT.")
     c = WebClient(dry)
+    # Если нужен прокси — пересоздаём httpx.Client с proxy
+    if proxy:
+        import httpx as _httpx
+        c.http = _httpx.Client(
+            base_url=tw.BASE, timeout=30, proxy=proxy,
+            headers={"User-Agent": tw.UA, "Accept": "application/json, text/plain, */*",
+                     **tw.ORIGIN_HEADERS},
+        )
     c.auth(token)
     return c
 
@@ -1587,17 +1621,22 @@ def accounts_page():
 
         elif action == "add":
             vk_token = request.form.get("vk_token", "").strip()
+            vk_login = request.form.get("vk_login", "").strip()
+            vk_pass = request.form.get("vk_pass", "").strip()
             if not label:
                 error = "Укажи метку для аккаунта"
-            elif not vk_token:
-                error = "Вставь VK access token"
+            elif not vk_login and not vk_token:
+                error = "Нужен VK логин+пароль (или токен для legacy)"
             else:
                 try:
                     import httpx
-                    tee(f"Auth VK → JWT (v3/v2)")
+                    tee(f"Auth VK → JWT (v3 PKCE)")
                     settings = _load_settings()
                     rucaptcha_key = settings.get("rucaptcha_key", "")
-                    auth = _auth_vk_to_jwt(vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+                    proxy = _get_next_proxy(settings)
+                    auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
+                                           vk_token=vk_token, rucaptcha_key=rucaptcha_key,
+                                           proxy=proxy)
                     for line in auth.get("log", []):
                         tee(line)
                     if not auth.get("ok"):
@@ -1608,12 +1647,9 @@ def accounts_page():
                     user_name = ""
                     user_id = ""
                     try:
-                        me_resp = httpx.get(
-                            f"{tw.BASE}{tw.API['me']}",
-                            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                                     "Authorization": f"JWT {jwt_token}"},
-                            timeout=15,
-                        )
+                        with _make_proxied_httpx_client(proxy) as hc:
+                            hc.headers["Authorization"] = f"JWT {jwt_token}"
+                            me_resp = hc.get(f"{tw.BASE}{tw.API['me']}")
                         if me_resp.status_code < 400:
                             me_data = me_resp.json()
                             user_name = me_data.get("name", "")
@@ -1626,6 +1662,7 @@ def accounts_page():
                         "jwt": jwt_token,
                         "user_id": user_id,
                         "name": user_name,
+                        "proxy": proxy,
                     }
                     _save_accounts(ACCOUNTS)
                     tee(f"Аккаунт '{label}' добавлен (JWT получен, id={user_id}, name={user_name})")
@@ -1702,7 +1739,8 @@ def swipe_page():
         mode = request.form.get("mode", "")
 
         try:
-            c = _make_web_client(f["token"], False, tee)
+            _proxy = request.form.get("proxy", "").strip() or _get_next_proxy()
+            c = _make_web_client(f["token"], False, tee, proxy=_proxy)
 
             if mode == "set_filter":
                 # 1) Обновляем location (координаты) + город в профиле
@@ -1837,7 +1875,8 @@ def index():
     mode = form.get("mode", "full")
 
     try:
-        c = _make_web_client(f["token"], dry, tee)
+        _proxy = form.get("proxy", "").strip() or _get_next_proxy()
+        c = _make_web_client(f["token"], dry, tee, proxy=_proxy)
 
         if not f["profile_only"]:
             photo_file = request.files.get("photo")
@@ -1910,14 +1949,13 @@ def city_search():
     if not token or not q:
         return jsonify({"error": "need token and q"})
     try:
-        import httpx
-        resp = httpx.get(
-            f"{tw.BASE}{API_PROFILE['city']}",
-            params={"name": q, "hasUsers": "false"},
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Authorization": f"JWT {token}"},
-            timeout=15,
-        )
+        proxy = (data.get("proxy") or "").strip() or _get_next_proxy()
+        with _make_proxied_httpx_client(proxy) as hc:
+            hc.headers["Authorization"] = f"JWT {token}"
+            resp = hc.get(
+                f"{tw.BASE}{API_PROFILE['city']}",
+                params={"name": q, "hasUsers": "false"},
+            )
         if resp.status_code >= 400:
             return jsonify({"error": f"status {resp.status_code}"})
         return jsonify(resp.json())
@@ -1937,19 +1975,19 @@ def upload_photo():
     if not files:
         return jsonify({"error": "no files"})
 
-    import httpx
+    proxy = (request.form.get("proxy") or "").strip() or _get_next_proxy()
     results = []
     for i, f in enumerate(files):
         cur_order = order + i
         try:
             file_bytes = f.read()
-            resp = httpx.post(
-                f"{tw.BASE}/api/photo/",
-                headers={"User-Agent": tw.UA, "Authorization": f"JWT {token}"},
-                files={"file": (f.filename or f"photo_{cur_order}.jpg", file_bytes, f.content_type or "image/jpeg")},
-                data={"order": str(cur_order), "type": "photo"},
-                timeout=30,
-            )
+            with _make_proxied_httpx_client(proxy) as hc:
+                hc.headers["Authorization"] = f"JWT {token}"
+                resp = hc.post(
+                    f"{tw.BASE}/api/photo/",
+                    files={"file": (f.filename or f"photo_{cur_order}.jpg", file_bytes, f.content_type or "image/jpeg")},
+                    data={"order": str(cur_order), "type": "photo"},
+                )
             if resp.status_code == 201:
                 r = resp.json()
                 results.append({"ok": True, "id": r.get("id"), "order": r.get("order"),
@@ -1976,13 +2014,11 @@ def delete_photo():
     photo_id = (data.get("photo_id") or "").strip()
     if not token or not photo_id:
         return jsonify({"error": "need token and photo_id"})
-    import httpx
     try:
-        resp = httpx.delete(
-            f"{tw.BASE}/api/photo/{photo_id}/",
-            headers={"User-Agent": tw.UA, "Authorization": f"JWT {token}"},
-            timeout=15,
-        )
+        proxy = (data.get("proxy") or "").strip() or _get_next_proxy()
+        with _make_proxied_httpx_client(proxy) as hc:
+            hc.headers["Authorization"] = f"JWT {token}"
+            resp = hc.delete(f"{tw.BASE}/api/photo/{photo_id}/")
         return jsonify({"ok": resp.status_code == 204, "status": resp.status_code})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
@@ -1996,17 +2032,18 @@ def reorder_photo():
     new_order = request.form.get("order", "0")
     if not token or not photo_id:
         return jsonify({"error": "need token and photo_id"})
-    import httpx
     try:
+        proxy = (request.form.get("proxy") or "").strip() or _get_next_proxy()
         kw = {"data": {"order": new_order, "type": "photo"}}
         f = request.files.get("file")
         if f:
             kw["files"] = {"file": (f.filename, f.read(), f.content_type or "image/jpeg")}
-        resp = httpx.patch(
-            f"{tw.BASE}/api/photo/{photo_id}/",
-            headers={"User-Agent": tw.UA, "Authorization": f"JWT {token}"},
-            timeout=30, **kw,
-        )
+        with _make_proxied_httpx_client(proxy) as hc:
+            hc.headers["Authorization"] = f"JWT {token}"
+            resp = hc.patch(
+                f"{tw.BASE}/api/photo/{photo_id}/",
+                **kw,
+            )
         if resp.status_code in (200, 201):
             return jsonify({"ok": True, **resp.json()})
         else:
@@ -2028,14 +2065,11 @@ def my_photos():
     token = (data.get("token") or "").strip().strip('"\'')
     if not token:
         return jsonify({"error": "need token"})
-    import httpx
     try:
-        resp = httpx.get(
-            f"{tw.BASE}/api/users/me/",
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Authorization": f"JWT {token}"},
-            timeout=15,
-        )
+        proxy = (data.get("proxy") or "").strip() or _get_next_proxy()
+        with _make_proxied_httpx_client(proxy) as hc:
+            hc.headers["Authorization"] = f"JWT {token}"
+            resp = hc.get(f"{tw.BASE}/api/users/me/")
         me = resp.json()
         avatar = me.get("avatar")
         photos = me.get("photos", [])
@@ -2079,78 +2113,72 @@ def save_presets():
 
 @app.route("/preset-register", methods=["POST"])
 def preset_register():
-    """Зарегать анкету через VK → JWT + user info. Поддержка v3 (PKCE) + fallback v2."""
+    """Зарегать анкету через VK → JWT (v3 PKCE)."""
     import httpx
     data = request.get_json(force=True)
     vk_token = (data.get("vk_token") or "").strip()
     vk_login = (data.get("vk_id") or "").strip()
     vk_pass = (data.get("vk_pass") or "").strip()
 
-    # Загрузить RuCaptcha ключ из настроек
     settings = _load_settings()
     rucaptcha_key = settings.get("rucaptcha_key", "")
+    proxy = data.get("proxy") or _get_next_proxy(settings)
 
-    if not vk_login and not vk_token:
-        return jsonify({"ok": False, "error": "Нет VK логина/токена"})
+    if not vk_login:
+        return jsonify({"ok": False, "error": "Нужен VK логин и пароль"})
 
     try:
         auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
-                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key,
+                               proxy=proxy)
         if not auth.get("ok"):
             return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
                             "log": auth.get("log", [])})
         jwt_token = auth["jwt"]
 
-        # Получим имя и ID
+        # Получим имя и ID (через прокси)
         user_name = ""
         user_id = ""
         try:
-            me_resp = httpx.get(
-                f"{tw.BASE}{tw.API['me']}",
-                headers={"User-Agent": tw.UA, "Accept": "application/json",
-                         "Authorization": f"JWT {jwt_token}"},
-                timeout=15,
-            )
-            if me_resp.status_code < 400:
-                me = me_resp.json()
-                user_name = me.get("name", "")
-                user_id = str(me.get("id", ""))
+            with _make_proxied_httpx_client(proxy) as hc:
+                hc.headers["Authorization"] = f"JWT {jwt_token}"
+                me_resp = hc.get(f"{tw.BASE}{tw.API['me']}")
+                if me_resp.status_code < 400:
+                    me = me_resp.json()
+                    user_name = me.get("name", "")
+                    user_id = str(me.get("id", ""))
         except Exception:
             pass
 
-        # Если переданы координаты — сразу ставим локацию
+        # Если переданы координаты — сразу ставим локацию (через прокси)
         lat_s = str(data.get("latitude", "")).strip()
         lon_s = str(data.get("longitude", "")).strip()
         if lat_s and lon_s:
             try:
-                httpx.patch(
-                    f"{tw.BASE}/api/users/me/",
-                    headers={"User-Agent": tw.UA, "Authorization": f"JWT {jwt_token}",
-                             "Content-Type": "application/json"},
-                    json={"location": f"POINT({lat_s} {lon_s})"},
-                    timeout=15,
-                )
+                with _make_proxied_httpx_client(proxy) as hc:
+                    hc.headers["Authorization"] = f"JWT {jwt_token}"
+                    hc.headers["Content-Type"] = "application/json"
+                    hc.patch(f"{tw.BASE}/api/users/me/",
+                             json={"location": f"POINT({lat_s} {lon_s})"})
             except Exception:
                 pass
 
         return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name,
-                        "auth_log": auth.get("log", [])})
+                        "proxy": proxy, "auth_log": auth.get("log", [])})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/apply-preset", methods=["POST"])
 def apply_preset():
-    """Применить пресет: location + city + filter через Flask-прокси (обход CORS)."""
-    import httpx
+    """Применить пресет: location + city + filter через прокси."""
     data = request.get_json(force=True)
     token = (data.get("token") or "").strip().strip('"\'')
+    proxy = (data.get("proxy") or "").strip()
     p = data.get("preset", {})
     if not token:
         return jsonify({"ok": False, "log": "Нет токена"})
 
-    headers = {"User-Agent": tw.UA, "Authorization": f"JWT {token}",
-               "Content-Type": "application/json", "Accept": "application/json"}
     log_lines = []
 
     # 1) PATCH /api/users/me/ — location + city
@@ -2164,8 +2192,9 @@ def apply_preset():
         me_body["nameCity"] = city_name
     if me_body:
         try:
-            r = httpx.patch(f"{tw.BASE}/api/users/me/", headers=headers,
-                            json=me_body, timeout=15)
+            with _make_proxied_httpx_client(proxy) as hc:
+                hc.headers.update({"Authorization": f"JWT {token}", "Content-Type": "application/json"})
+                r = hc.patch(f"{tw.BASE}/api/users/me/", json=me_body)
             log_lines.append(f"Профиль: {r.status_code}")
         except Exception as e:
             log_lines.append(f"Профиль ошибка: {e}")
@@ -2182,8 +2211,9 @@ def apply_preset():
         filter_body["gender"] = p["filter_gender"]
     if filter_body:
         try:
-            r = httpx.patch(f"{tw.BASE}/api/users/me/filter/", headers=headers,
-                            json=filter_body, timeout=15)
+            with _make_proxied_httpx_client(proxy) as hc:
+                hc.headers.update({"Authorization": f"JWT {token}", "Content-Type": "application/json"})
+                r = hc.patch(f"{tw.BASE}/api/users/me/filter/", json=filter_body)
             log_lines.append(f"Фильтр: {r.status_code}")
         except Exception as e:
             log_lines.append(f"Фильтр ошибка: {e}")
@@ -2476,21 +2506,22 @@ def api_accounts_list():
 @app.route("/api/accounts", methods=["POST"])
 def api_accounts_add():
     """Добавить аккаунт через VK. JSON: {label, vk_token, vk_id?, vk_pass?}"""
-    import httpx
     data = request.get_json(force=True)
     label = (data.get("label") or "").strip()
     vk_token = (data.get("vk_token") or "").strip()
     vk_login = (data.get("vk_id") or "").strip()
     vk_pass = (data.get("vk_pass") or "").strip()
-    if not label or (not vk_token and not vk_login):
-        return jsonify({"ok": False, "error": "need label and vk_token or vk_id+vk_pass"})
+    if not label or not vk_login:
+        return jsonify({"ok": False, "error": "Нужен label и VK логин+пароль"})
 
     settings = _load_settings()
     rucaptcha_key = settings.get("rucaptcha_key", "")
+    proxy = _get_next_proxy(settings)
 
     try:
         auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
-                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key,
+                               proxy=proxy)
         if not auth.get("ok"):
             return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
                             "log": auth.get("log", [])})
@@ -2498,12 +2529,9 @@ def api_accounts_add():
 
         user_name, user_id = "", ""
         try:
-            me_resp = httpx.get(
-                f"{tw.BASE}{tw.API['me']}",
-                headers={"User-Agent": tw.UA, "Accept": "application/json",
-                         "Authorization": f"JWT {jwt_token}"},
-                timeout=15,
-            )
+            with _make_proxied_httpx_client(proxy) as hc:
+                hc.headers["Authorization"] = f"JWT {jwt_token}"
+                me_resp = hc.get(f"{tw.BASE}{tw.API['me']}")
             if me_resp.status_code < 400:
                 me = me_resp.json()
                 user_name = me.get("name", "")
@@ -2511,9 +2539,9 @@ def api_accounts_add():
         except Exception:
             pass
         ACCOUNTS[label] = {"vk_token": vk_token, "jwt": jwt_token,
-                           "user_id": user_id, "name": user_name}
+                           "user_id": user_id, "name": user_name, "proxy": proxy}
         _save_accounts(ACCOUNTS)
-        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name})
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name, "proxy": proxy})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -2534,8 +2562,9 @@ def api_feed():
     if not token:
         return jsonify({"ok": False, "error": "need token"})
     try:
+        proxy = (data.get("proxy") or "").strip() or _get_next_proxy()
         log_buf = io.StringIO()
-        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"))
+        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"), proxy=proxy)
         result = c.call("GET", DATING_SEARCH_PATH)
         feed = _parse_feed(result)
         return jsonify({"ok": True, "feed": feed, "count": len(feed)})
@@ -2553,8 +2582,9 @@ def api_action():
     if not token or not user_id:
         return jsonify({"ok": False, "error": "need token and user_id"})
     try:
+        proxy = (data.get("proxy") or "").strip() or _get_next_proxy()
         log_buf = io.StringIO()
-        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"))
+        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"), proxy=proxy)
         c.call("POST", DATING_ACTION_PATH, json={"user": user_id, "type": action_type})
         return jsonify({"ok": True})
     except Exception as e:
@@ -2563,16 +2593,17 @@ def api_action():
 
 @app.route("/api/auto-like", methods=["POST"])
 def api_auto_like():
-    """Автолайк. JSON: {token, max_rounds?}"""
+    """Автолайк. JSON: {token, max_rounds?, proxy?}"""
     import random as rnd
     data = request.get_json(force=True)
     token = (data.get("token") or "").strip().strip('"\'')
+    proxy = (data.get("proxy") or "").strip()
     max_rounds = int(data.get("max_rounds", 50))
     if not token:
         return jsonify({"ok": False, "error": "need token"})
     try:
         log_buf = io.StringIO()
-        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"))
+        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"), proxy=proxy)
         liked, errors, rounds = 0, 0, 0
         stopped_reason = ""
         while rounds < max_rounds:
@@ -2609,19 +2640,16 @@ def api_auto_like():
 
 @app.route("/api/profile", methods=["POST"])
 def api_profile():
-    """Получить профиль. JSON: {token}"""
-    import httpx
+    """Получить профиль. JSON: {token, proxy?}"""
     data = request.get_json(force=True)
     token = (data.get("token") or "").strip().strip('"\'')
+    proxy = (data.get("proxy") or "").strip()
     if not token:
         return jsonify({"ok": False, "error": "need token"})
     try:
-        resp = httpx.get(
-            f"{tw.BASE}{tw.API['me']}",
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Authorization": f"JWT {token}"},
-            timeout=15,
-        )
+        with _make_proxied_httpx_client(proxy) as hc:
+            hc.headers["Authorization"] = f"JWT {token}"
+            resp = hc.get(f"{tw.BASE}{tw.API['me']}")
         if resp.status_code >= 400:
             return jsonify({"ok": False, "error": f"Статус {resp.status_code}"})
         return jsonify({"ok": True, "profile": resp.json()})
@@ -2677,16 +2705,18 @@ def api_register_account():
     vk_login = (data.get("vk_id") or "").strip()
     vk_pass = (data.get("vk_pass") or "").strip()
 
-    if not vk_login and not vk_token:
-        return jsonify({"ok": False, "error": "Нет VK логина/токена"})
+    if not vk_login:
+        return jsonify({"ok": False, "error": "Нужен VK логин и пароль"})
 
     settings = _load_settings()
     rucaptcha_key = settings.get("rucaptcha_key", "")
+    proxy = data.get("proxy") or _get_next_proxy(settings)
 
     try:
-        # 1) Авторизация через VK (v3 PKCE или fallback v2)
+        # 1) Авторизация через VK (v3 PKCE)
         auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
-                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key,
+                               proxy=proxy)
         if not auth.get("ok"):
             return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
                             "log": auth.get("log", [])})
@@ -2697,7 +2727,7 @@ def api_register_account():
         for line in auth.get("log", []):
             log_buf.write(line + "\n")
         tee = lambda m: log_buf.write(m + "\n")
-        c = _make_web_client(jwt_token, False, tee)
+        c = _make_web_client(jwt_token, False, tee, proxy=proxy)
 
         # 2) Онбординг
         name = data.get("name", "")
@@ -2802,15 +2832,17 @@ def api_register_account():
         except Exception:
             pass
 
-        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name, "log": log_buf.getvalue()})
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name,
+                        "proxy": proxy, "log": log_buf.getvalue()})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "log": log_buf.getvalue() if 'log_buf' in dir() else ""})
 
 
 @app.route("/api/verify-video", methods=["POST"])
 def api_verify_video():
-    """Верификация через видео. FormData: token + video."""
+    """Верификация через видео. FormData: token + video + proxy?."""
     token = request.form.get("token", "").strip().strip('"\'')
+    proxy = request.form.get("proxy", "").strip()
     video_file = request.files.get("video")
     if not token or not video_file:
         return jsonify({"ok": False, "error": "Нужен token и video"})
@@ -2818,21 +2850,20 @@ def api_verify_video():
     log_buf = io.StringIO()
     tee = lambda m: log_buf.write(m + "\n")
     try:
-        c = _make_web_client(token, False, tee)
+        c = _make_web_client(token, False, tee, proxy=proxy)
         send_liveness(c, video_file, tee)
 
-        # Проверяем verified после отправки
-        import httpx
-        me_resp = httpx.get(
-            f"{tw.BASE}{tw.API['me']}",
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Authorization": f"JWT {token}"},
-            timeout=15,
-        )
+        # Проверяем verified после отправки (через прокси)
         verified = False
-        if me_resp.status_code < 400:
-            me = me_resp.json()
-            verified = me.get("verified", False)
+        try:
+            with _make_proxied_httpx_client(proxy) as hc:
+                hc.headers["Authorization"] = f"JWT {token}"
+                me_resp = hc.get(f"{tw.BASE}{tw.API['me']}")
+            if me_resp.status_code < 400:
+                me = me_resp.json()
+                verified = me.get("verified", False)
+        except Exception:
+            pass
 
         return jsonify({"ok": True, "verified": verified, "log": log_buf.getvalue()})
     except Exception as e:
@@ -2841,20 +2872,17 @@ def api_verify_video():
 
 @app.route("/api/check-status", methods=["POST"])
 def api_check_status():
-    """Проверка верификации и премиума. JSON: {jwt}."""
-    import httpx
+    """Проверка верификации и премиума. JSON: {jwt, proxy?}."""
     data = request.get_json(force=True)
     jwt = (data.get("jwt") or "").strip().strip('"\'')
+    proxy = (data.get("proxy") or "").strip()
     if not jwt:
         return jsonify({"ok": False, "error": "Нет JWT"})
 
     try:
-        resp = httpx.get(
-            f"{tw.BASE}{tw.API['me']}",
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Authorization": f"JWT {jwt}"},
-            timeout=15,
-        )
+        with _make_proxied_httpx_client(proxy) as hc:
+            hc.headers["Authorization"] = f"JWT {jwt}"
+            resp = hc.get(f"{tw.BASE}{tw.API['me']}")
         if resp.status_code >= 400:
             return jsonify({"ok": False, "error": f"Статус {resp.status_code}"})
 
@@ -2885,27 +2913,26 @@ def api_recover_account():
     vk_login = (data.get("vk_id") or "").strip()
     vk_pass = (data.get("vk_pass") or "").strip()
 
-    if not vk_login and not vk_token:
-        return jsonify({"ok": False, "error": "Нет VK логина/токена"})
+    if not vk_login:
+        return jsonify({"ok": False, "error": "Нужен VK логин и пароль"})
 
     settings = _load_settings()
     rucaptcha_key = settings.get("rucaptcha_key", "")
+    proxy = data.get("proxy") or _get_next_proxy(settings)
 
     try:
         auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
-                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key,
+                               proxy=proxy)
         if not auth.get("ok"):
             return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
                             "log": auth.get("log", [])})
         jwt_token = auth["jwt"]
 
-        # Get account info
-        me_resp = httpx.get(
-            f"{tw.BASE}{tw.API['me']}",
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Authorization": f"JWT {jwt_token}"},
-            timeout=15,
-        )
+        # Get account info (через прокси)
+        with _make_proxied_httpx_client(proxy) as hc:
+            hc.headers["Authorization"] = f"JWT {jwt_token}"
+            me_resp = hc.get(f"{tw.BASE}{tw.API['me']}")
         me = me_resp.json() if me_resp.status_code < 400 else {}
 
         verified = me.get("verified", False)
@@ -2935,6 +2962,7 @@ def api_recover_account():
             "latitude": lat,
             "longitude": lon,
             "city_name": city_name,
+            "proxy": proxy,
             "raw_location": str(location)[:200],
         })
     except Exception as e:
@@ -2951,9 +2979,13 @@ def api_rucaptcha_balance():
         return jsonify({"ok": False, "error": "Нет API ключа"})
 
     try:
+        proxy = _get_next_proxy()
+        kw = {"timeout": 10}
+        if proxy:
+            kw["proxy"] = proxy
         resp = httpx.get(
             f"https://rucaptcha.com/res.php?key={key}&action=getbalance&json=1",
-            timeout=10,
+            **kw,
         )
         d = resp.json()
         if d.get("status") == 1:
@@ -2979,8 +3011,10 @@ def api_test_vk_auth():
     if not vk_login and not vk_token:
         return jsonify({"ok": False, "error": "Нужен vk_id+vk_pass или vk_token"})
 
+    proxy = (data.get("proxy") or "").strip() or _get_next_proxy(settings)
     result = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
-                             vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+                             vk_token=vk_token, rucaptcha_key=rucaptcha_key,
+                             proxy=proxy)
     return jsonify(result)
 
 
