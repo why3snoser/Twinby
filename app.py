@@ -2842,18 +2842,15 @@ def api_recover_account():
         name = me.get("name", "")
         user_id = str(me.get("id", ""))
 
-        # Try to extract city from location
-        city_name = ""
-        location = me.get("location", "")
-        # location is "POINT(lat lon)" — try to match to known city
-        if location and "POINT" in str(location):
-            try:
-                coords = str(location).replace("POINT(", "").replace(")", "").split()
-                lat, lon = float(coords[0]), float(coords[1])
-            except Exception:
-                lat, lon = 0, 0
-        else:
-            lat, lon = 0, 0
+        # Extract location — format may be "POINT(lat lon)" or "POINT (lat lon)"
+        city_name = me.get("city", "") or me.get("cityName", "") or ""
+        location = me.get("location") or ""
+        lat, lon = 0, 0
+        if location:
+            import re
+            m = re.search(r'POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)', str(location))
+            if m:
+                lat, lon = float(m.group(1)), float(m.group(2))
 
         return jsonify({
             "ok": True,
@@ -2866,6 +2863,7 @@ def api_recover_account():
             "latitude": lat,
             "longitude": lon,
             "city_name": city_name,
+            "raw_location": str(location)[:200],
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})

@@ -846,7 +846,7 @@ async function recoverPreset(presetName) {
       p.accounts.push(accObj);
       savePresetsServer(()=>renderPresetDetail());
       const status = [d.verified?'✓':'⚠️', d.premium?'💎':''].filter(Boolean).join(' ');
-      logMsg(`  Восстановлен: ${d.name||'?'} (${cityName||'?'}) ${status}`);
+      logMsg(`  Восстановлен: ${d.name||'?'} (${cityName||'?'}) ${status}${d.raw_location?' [loc:'+d.raw_location+']':''}`);
     } catch(e) { logMsg(`  ОШИБКА: ${e}`); }
   }
   logMsg('=== Восстановление завершено ===');
