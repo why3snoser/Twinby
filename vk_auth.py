@@ -225,7 +225,21 @@ def _solve_vk_captcha_rucaptcha(
             d2 = r2.json()
 
             status = d2.get("status")
-            req = str(d2.get("request", ""))
+            raw_req = d2.get("request", "")
+
+            # RuCaptcha vkcaptcha возвращает request как dict {'token': 'eyJ...'}
+            if isinstance(raw_req, dict):
+                req = raw_req.get("token", "")
+                if not req:
+                    # fallback — первое строковое значение
+                    for v in raw_req.values():
+                        if isinstance(v, str) and len(v) > 10:
+                            req = v
+                            break
+                    else:
+                        req = str(raw_req)
+            else:
+                req = str(raw_req)
 
             if status == 1:
                 log.append(f"  [captcha] Solved! token: {req[:60]}...")
