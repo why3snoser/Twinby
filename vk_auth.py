@@ -28,8 +28,8 @@ import httpx
 TWINBY_VK_APP_ID = "7984771"
 TWINBY_REDIRECT_URI = "vk7984771://vk.ru/blank.html"
 
-# VK Admin app — используется vk_api для implicit flow
-VK_ADMIN_APP_ID = "6287487"
+# VK app — default app_id из python273/vk_api для browser login
+VK_ADMIN_APP_ID = "6222115"
 
 UA_BROWSER = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
