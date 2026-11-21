@@ -367,38 +367,121 @@ def _vk_id_login(
     except Exception as e:
         return {"ok": False, "error": f"GET id.vk.ru/auth failed: {e}"}
 
-    # Извлечь window.init JSON
+    # Извлечь auth_token и anonymous_token из HTML
     auth_token = ""
     anonymous_token = ""
+    page_html = r_auth.text
 
-    init_match = re.search(r'window\.init\s*=\s*(\{.+?\});\s*\n', r_auth.text, re.DOTALL)
-    if init_match:
-        try:
-            init_data = json.loads(init_match.group(1))
-            # auth_token в init_data["auth"]["access_token"]
-            auth_section = init_data.get("auth", {})
-            auth_token = auth_section.get("access_token", "")
-            anonymous_token = auth_section.get("anonymous_token", "")
-            if not anonymous_token:
-                # Может быть в другом месте
-                anonymous_token = init_data.get("anonymous_token", "")
-            log.append(f"  auth_token: {auth_token[:40]}..." if auth_token else "  auth_token: NOT FOUND")
-            log.append(f"  anon_token: {anonymous_token[:40]}..." if anonymous_token else "  anon_token: NOT FOUND")
-        except Exception as e:
-            log.append(f"  window.init parse error: {e}")
+    # --- Способ 1: window.init JSON (правильный парсинг вложенных {}) ---
+    init_start = re.search(r'window\.init\s*=\s*\{', page_html)
+    if init_start:
+        # Найти закрывающую } с подсчётом вложенности
+        start_pos = init_start.start() + init_start.group().index("{")
+        depth = 0
+        end_pos = start_pos
+        in_string = False
+        escape_next = False
+        for i in range(start_pos, min(start_pos + 100000, len(page_html))):
+            ch = page_html[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                escape_next = True
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_pos = i + 1
+                    break
+
+        if end_pos > start_pos:
+            json_str = page_html[start_pos:end_pos]
+            try:
+                init_data = json.loads(json_str)
+                # auth_token может быть в разных местах:
+                # init_data["auth"]["access_token"]
+                # init_data["access_token"]
+                # init_data["auth"]["auth_token"]
+                auth_section = init_data.get("auth", {})
+                if isinstance(auth_section, dict):
+                    auth_token = auth_section.get("access_token", "") or auth_section.get("auth_token", "")
+                    anonymous_token = auth_section.get("anonymous_token", "")
+                if not auth_token:
+                    auth_token = init_data.get("access_token", "") or init_data.get("auth_token", "")
+                if not anonymous_token:
+                    anonymous_token = init_data.get("anonymous_token", "")
+                # Поиск вглубь — может быть вложенный объект
+                if not auth_token:
+                    for key, val in init_data.items():
+                        if isinstance(val, dict):
+                            at = val.get("access_token", "") or val.get("auth_token", "")
+                            if at:
+                                auth_token = at
+                                break
+                log.append(f"  window.init parsed OK ({len(json_str)} bytes)")
+                log.append(f"  auth_token: {auth_token[:50]}..." if auth_token else "  auth_token: NOT FOUND in init")
+                log.append(f"  anon_token: {anonymous_token[:50]}..." if anonymous_token else "  anon_token: NOT FOUND in init")
+            except json.JSONDecodeError as e:
+                log.append(f"  window.init JSON parse error: {e}")
+                log.append(f"  JSON snippet: {json_str[:200]}...")
     else:
         log.append("  window.init NOT FOUND in page")
-        # Попробовать другой паттерн
-        alt_match = re.search(r'"access_token"\s*:\s*"(eyJ[^"]+)"', r_auth.text)
-        if alt_match:
-            auth_token = alt_match.group(1)
-            log.append(f"  auth_token (alt): {auth_token[:40]}...")
-        anon_match = re.search(r'"anonymous_token"\s*:\s*"(anonym\.[^"]+)"', r_auth.text)
-        if anon_match:
-            anonymous_token = anon_match.group(1)
-            log.append(f"  anon_token (alt): {anonymous_token[:40]}...")
 
+    # --- Способ 2: regex fallback по всему HTML ---
     if not auth_token:
+        # auth_token как JWT (eyJ...)
+        m = re.search(r'"access_token"\s*:\s*"(eyJ[^"]+)"', page_html)
+        if m:
+            auth_token = m.group(1)
+            log.append(f"  auth_token (regex eyJ): {auth_token[:50]}...")
+        else:
+            # auth_token может быть не JWT — любой формат
+            m2 = re.search(r'"access_token"\s*:\s*"([^"]{20,})"', page_html)
+            if m2:
+                auth_token = m2.group(1)
+                log.append(f"  auth_token (regex generic): {auth_token[:50]}...")
+            else:
+                # Может быть "auth_token" вместо "access_token"
+                m3 = re.search(r'"auth_token"\s*:\s*"([^"]{10,})"', page_html)
+                if m3:
+                    auth_token = m3.group(1)
+                    log.append(f"  auth_token (key=auth_token): {auth_token[:50]}...")
+
+    if not anonymous_token:
+        m = re.search(r'"anonymous_token"\s*:\s*"(anonym[^"]+)"', page_html)
+        if m:
+            anonymous_token = m.group(1)
+            log.append(f"  anon_token (regex): {anonymous_token[:50]}...")
+
+    # --- Диагностика: показать фрагменты HTML где могут быть токены ---
+    if not auth_token:
+        # Найти все ключи, содержащие "token" или "access"
+        token_keys = re.findall(r'"([^"]*(?:token|access|auth)[^"]*)"\s*:\s*"([^"]{5,40})', page_html, re.IGNORECASE)
+        if token_keys:
+            log.append(f"  Token-like keys found: {token_keys[:10]}")
+        else:
+            log.append("  No token-like keys found in HTML")
+        # Показать фрагмент вокруг "init" если есть
+        idx = page_html.find("window.init")
+        if idx >= 0:
+            log.append(f"  window.init context: ...{page_html[idx:idx+300]}...")
+        else:
+            # Показать начало и конец скриптов
+            script_starts = [m.start() for m in re.finditer(r'<script', page_html)]
+            log.append(f"  <script> tags at positions: {script_starts[:10]}")
+            # Последние 500 символов перед </body>
+            body_end = page_html.rfind("</body>")
+            if body_end > 0:
+                log.append(f"  Before </body>: ...{page_html[max(0,body_end-300):body_end]}")
+
         return {"ok": False, "error": "Не удалось получить auth_token из id.vk.ru/auth"}
 
     time.sleep(0.3)
