@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twinby Tool</title>
+<style>
+:root {
+  --bg: #0a0a0f;
+  --bg2: #12121a;
+  --bg3: #1a1a26;
+  --bg4: #22222f;
+  --border: #2a2a3a;
+  --border-active: #6c5ce7;
+  --text: #e0e0e8;
+  --text2: #8888a0;
+  --text3: #55556a;
+  --accent: #6c5ce7;
+  --accent2: #a29bfe;
+  --green: #00b894;
+  --red: #e17055;
+  --orange: #fdcb6e;
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100vh; }
+
+/* ---- Layout ---- */
+.app { display: flex; height: 100vh; overflow: hidden; }
+
+/* Sidebar */
+.sidebar { width: 260px; background: var(--bg2); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; flex-shrink: 0; }
+.sidebar-header { padding: 20px; border-bottom: 1px solid var(--border); }
+.sidebar-header h1 { font-size: 18px; font-weight: 700; color: var(--accent2);
+  letter-spacing: 0.5px; }
+.sidebar-header .sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+.nav { flex: 1; overflow-y: auto; padding: 12px; }
+.nav-section { margin-bottom: 16px; }
+.nav-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px;
+  color: var(--text3); padding: 8px 12px 6px; font-weight: 600; }
+.nav-item { padding: 10px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 13px; color: var(--text2); transition: all 0.15s; display: flex;
+  align-items: center; gap: 10px; margin-bottom: 2px; }
+.nav-item:hover { background: var(--bg3); color: var(--text); }
+.nav-item.active { background: var(--accent); color: #fff; font-weight: 500; }
+.nav-item .icon { font-size: 16px; width: 20px; text-align: center; }
+.nav-item .badge { margin-left: auto; background: var(--bg4); padding: 2px 8px;
+  border-radius: 10px; font-size: 11px; color: var(--text3); }
+.nav-item.active .badge { background: rgba(255,255,255,0.2); color: #fff; }
+
+/* Main content */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.main-header { padding: 20px 28px 16px; border-bottom: 1px solid var(--border);
+  background: var(--bg); }
+.main-header h2 { font-size: 20px; font-weight: 600; }
+.main-header .desc { font-size: 12px; color: var(--text3); margin-top: 4px; }
+.content { flex: 1; overflow-y: auto; padding: 24px 28px; }
+
+/* Cards */
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 20px; margin-bottom: 12px; transition: border-color 0.15s; }
+.card:hover { border-color: var(--border-active); }
+.card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.card-header { display: flex; justify-content: space-between; align-items: center; }
+.card-title { font-size: 14px; font-weight: 600; }
+.card-sub { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.card-badge { font-size: 11px; padding: 3px 10px; border-radius: 999px;
+  background: var(--bg4); color: var(--text2); }
+.card-badge.ok { background: rgba(0,184,148,0.15); color: var(--green); }
+.card-badge.warn { background: rgba(253,203,110,0.15); color: var(--orange); }
+
+/* Forms */
+.form-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.form-group { flex: 1; min-width: 140px; }
+.form-group label { display: block; font-size: 11px; color: var(--text3);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; font-weight: 500; }
+.form-group input, .form-group select, .form-group textarea {
+  width: 100%; padding: 9px 12px; background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-size: 13px;
+  outline: none; transition: border-color 0.15s; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+  border-color: var(--accent); }
+.form-group textarea { min-height: 60px; resize: vertical; font-family: inherit; }
+
+/* Buttons */
+.btn { padding: 9px 18px; border: none; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: all 0.15s; display: inline-flex;
+  align-items: center; gap: 6px; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent2); }
+.btn-success { background: var(--green); color: #fff; }
+.btn-success:hover { opacity: 0.85; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover { opacity: 0.85; }
+.btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text2); }
+.btn-ghost:hover { border-color: var(--accent); color: var(--text); }
+.btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+/* Detail panel */
+.detail-panel { background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px; margin-top: 16px; }
+.detail-panel h3 { font-size: 15px; font-weight: 600; margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px; }
+.detail-section { margin-bottom: 16px; }
+.detail-section-title { font-size: 11px; color: var(--text3); text-transform: uppercase;
+  letter-spacing: 1px; margin-bottom: 8px; font-weight: 600; }
+.info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px; }
+.info-item { background: var(--bg3); padding: 10px 12px; border-radius: var(--radius-sm); }
+.info-item .label { font-size: 10px; color: var(--text3); text-transform: uppercase;
+  letter-spacing: 0.5px; }
+.info-item .value { font-size: 13px; margin-top: 3px; word-break: break-all; }
+.info-item .value.mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; }
+
+/* Log */
+.log-box { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px; font-family: 'SF Mono', monospace; font-size: 12px; color: var(--text2);
+  max-height: 200px; overflow-y: auto; white-space: pre-wrap; margin-top: 12px; }
+
+/* Feed cards */
+.feed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px; }
+.feed-card { background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; transition: all 0.2s; cursor: pointer; }
+.feed-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.feed-card img { width: 100%; height: 220px; object-fit: cover; display: block;
+  background: var(--bg3); }
+.feed-card .info { padding: 10px 12px; }
+.feed-card .name { font-size: 14px; font-weight: 600; }
+.feed-card .meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.feed-card .actions { display: flex; gap: 6px; padding: 0 12px 10px; }
+
+/* Empty state */
+.empty { text-align: center; padding: 60px 20px; color: var(--text3); }
+.empty .icon { font-size: 40px; margin-bottom: 12px; }
+.empty p { font-size: 14px; }
+
+/* Toast */
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 13px; z-index: 100; animation: slideUp 0.3s; max-width: 360px; }
+.toast.ok { border-color: var(--green); color: var(--green); }
+.toast.err { border-color: var(--red); color: var(--red); }
+@keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sidebar { width: 56px; }
+  .sidebar-header h1, .sidebar-header .sub, .nav-section-title,
+  .nav-item span:not(.icon), .nav-item .badge { display: none; }
+  .nav-item { justify-content: center; padding: 12px; }
+  .nav-item .icon { margin: 0; }
+  .content { padding: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h1>Twinby Tool</h1>
+      <div class="sub">Управление анкетами</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">
+        <div class="nav-section-title">Основное</div>
+        <div class="nav-item active" data-page="presets" onclick="showPage('presets')">
+          <span class="icon">📋</span><span>Пресеты</span>
+          <span class="badge" id="presetCount">0</span>
+        </div>
+        <div class="nav-item" data-page="swipe" onclick="showPage('swipe')">
+          <span class="icon">💘</span><span>Свайпы</span>
+        </div>
+        <div class="nav-item" data-page="photos" onclick="showPage('photos')">
+          <span class="icon">📸</span><span>Фото</span>
+        </div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Система</div>
+        <div class="nav-item" data-page="accounts" onclick="showPage('accounts')">
+          <span class="icon">🔑</span><span>Аккаунты</span>
+          <span class="badge" id="accountCount">0</span>
+        </div>
+        <div class="nav-item" data-page="log" onclick="showPage('log')">
+          <span class="icon">📜</span><span>Лог</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="main-header">
+      <h2 id="pageTitle">Пресеты</h2>
+      <div class="desc" id="pageDesc">Персоны и анкеты по городам</div>
+    </div>
+    <div class="content" id="pageContent"></div>
+  </div>
+</div>
+
+<script>
+// ---- State ----
+let STATE = {
+  presets: {},
+  accounts: {},
+  currentPage: 'presets',
+  openPreset: null,
+  openAnketa: null,
+  logLines: [],
+  feedData: [],
+  swipeToken: '',
+};
+
+// ---- API helpers ----
+async function api(url, opts = {}) {
+  if (opts.body && typeof opts.body === 'object' && !(opts.body instanceof FormData)) {
+    opts.headers = { 'Content-Type': 'application/json', ...opts.headers };
+    opts.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(url, opts);
+  return r.json();
+}
+function log(msg) {
+  const ts = new Date().toLocaleTimeString('ru');
+  STATE.logLines.push(`[${ts}] ${msg}`);
+  if (STATE.logLines.length > 200) STATE.logLines.shift();
+  if (STATE.currentPage === 'log') renderLog();
+}
+function toast(msg, type = 'ok') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+// ---- Data loading ----
+async function loadPresets() {
+  STATE.presets = await api('/api/presets') || {};
+  document.getElementById('presetCount').textContent = Object.keys(STATE.presets).length;
+}
+async function loadAccounts() {
+  STATE.accounts = await api('/api/accounts') || {};
+  document.getElementById('accountCount').textContent = Object.keys(STATE.accounts).length;
+}
+async function savePresets() {
+  await api('/api/presets', { method: 'POST', body: STATE.presets });
+}
+
+// ---- Navigation ----
+function showPage(page) {
+  STATE.currentPage = page;
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === page);
+  });
+  const titles = {
+    presets: ['Пресеты', 'Персоны и анкеты по городам'],
+    swipe: ['Свайпы', 'Лента и лайки'],
+    photos: ['Фото', 'Управление фотографиями'],
+    accounts: ['Аккаунты', 'VK токены и JWT'],
+    log: ['Лог', 'История действий'],
+  };
+  document.getElementById('pageTitle').textContent = titles[page]?.[0] || page;
+  document.getElementById('pageDesc').textContent = titles[page]?.[1] || '';
+  render();
+}
+
+function render() {
+  const c = document.getElementById('pageContent');
+  switch (STATE.currentPage) {
+    case 'presets': renderPresets(c); break;
+    case 'swipe': renderSwipe(c); break;
+    case 'photos': renderPhotos(c); break;
+    case 'accounts': renderAccounts(c); break;
+    case 'log': renderLog(c); break;
+    default: c.innerHTML = '<div class="empty"><div class="icon">🤔</div><p>Страница не найдена</p></div>';
+  }
+}
+
+// ==================== PRESETS ====================
+function renderPresets(c) {
+  if (!c) c = document.getElementById('pageContent');
+  let html = '';
+
+  // Create new preset
+  html += `<div class="card">
+    <div class="form-row">
+      <div class="form-group" style="flex:2"><label>Имя пресета</label>
+        <input type="text" id="newPName" placeholder="Артём, 25 (визи)"></div>
+      <div class="form-group" style="flex:3"><label>VK данные (id:пароль:токен)</label>
+        <input type="text" id="newPVk" placeholder="48450464782:pass123:vk1.a.SQV..."></div>
+      <div class="form-group" style="flex:0;min-width:auto;display:flex;align-items:end">
+        <button class="btn btn-primary" onclick="createPreset()">+ Создать</button></div>
+    </div></div>`;
+
+  // Preset list
+  const presets = Object.entries(STATE.presets);
+  if (!presets.length) {
+    html += '<div class="empty"><div class="icon">📋</div><p>Нет пресетов. Создай первый.</p></div>';
+  }
+  for (const [name, p] of presets) {
+    const anketaCount = Object.keys(p.ankety || {}).length;
+    const isOpen = STATE.openPreset === name;
+    html += `<div class="card ${isOpen ? 'active' : ''}" onclick="togglePreset('${esc(name)}')">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${esc(name)}</div>
+          <div class="card-sub">VK: ${esc(p.vk_id || '—')} · Анкет: ${anketaCount}</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span class="card-badge ${anketaCount > 0 ? 'ok' : ''}">${anketaCount} анкет</span>
+          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deletePreset('${esc(name)}')">✕</button>
+        </div>
+      </div>
+    </div>`;
+
+    if (isOpen) {
+      html += renderPresetDetail(name, p);
+    }
+  }
+  c.innerHTML = html;
+}
+
+function renderPresetDetail(name, p) {
+  const ankety = p.ankety || {};
+  let html = `<div class="detail-panel">
+    <h3>⚙️ ${esc(name)}</h3>
+
+    <div class="detail-section">
+      <div class="detail-section-title">VK аккаунт</div>
+      <div class="form-row">
+        <div class="form-group"><label>VK ID</label>
+          <input type="text" value="${esc(p.vk_id)}" onchange="updPreset('${esc(name)}','vk_id',this.value)"></div>
+        <div class="form-group"><label>Пароль</label>
+          <input type="text" value="${esc(p.vk_pass)}" onchange="updPreset('${esc(name)}','vk_pass',this.value)"></div>
+        <div class="form-group" style="flex:2"><label>Токен</label>
+          <input type="text" value="${esc(p.vk_token)}" onchange="updPreset('${esc(name)}','vk_token',this.value)"></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Анкеты по городам (${Object.keys(ankety).length})</div>`;
+
+  for (const [city, a] of Object.entries(ankety)) {
+    const isOpenA = STATE.openAnketa === city;
+    const hasJwt = !!a.jwt;
+    html += `<div class="card ${isOpenA ? 'active' : ''}" style="margin-bottom:8px" onclick="event.stopPropagation();toggleAnketa('${esc(city)}')">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${esc(city)}</div>
+          <div class="card-sub">${a.name ? esc(a.name) + ' · ' : ''}лайков: ${a.likes_done || 0}${hasJwt ? ' · JWT: ' + esc(a.jwt.substring(0,25)) + '...' : ''}</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span class="card-badge ${hasJwt ? 'ok' : 'warn'}">${hasJwt ? 'JWT ✓' : 'Нет JWT'}</span>
+          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteAnketa('${esc(name)}','${esc(city)}')">✕</button>
+        </div>
+      </div>
+    </div>`;
+
+    if (isOpenA) {
+      html += renderAnketaDetail(name, city, a, p);
+    }
+  }
+
+  // Add anketa form
+  html += `<div class="form-row" style="margin-top:10px">
+    <div class="form-group"><label>Город</label>
+      <input type="text" id="newACity_${esc(name)}" placeholder="Москва"></div>
+    <div class="form-group" style="max-width:120px"><label>Широта</label>
+      <input type="text" id="newALat_${esc(name)}" placeholder="55.7558"></div>
+    <div class="form-group" style="max-width:120px"><label>Долгота</label>
+      <input type="text" id="newALon_${esc(name)}" placeholder="37.6173"></div>
+    <div class="form-group" style="flex:0;min-width:auto;display:flex;align-items:end">
+      <button class="btn btn-ghost" onclick="addAnketa('${esc(name)}')">+ Анкета</button></div>
+  </div>`;
+
+  if (Object.keys(ankety).length > 0) {
+    html += `<div class="btn-row">
+      <button class="btn btn-success" onclick="registerAll('${esc(name)}')">🔑 Зарегать все (VK→JWT)</button>
+    </div>`;
+  }
+
+  html += `</div></div>`; // close detail-section and detail-panel
+  return html;
+}
+
+function renderAnketaDetail(presetName, city, a, p) {
+  return `<div class="detail-panel" style="margin: 0 0 8px; border-color: var(--accent);" onclick="event.stopPropagation()">
+    <div class="detail-section">
+      <div class="detail-section-title">Данные анкеты</div>
+      <div class="info-grid">
+        <div class="info-item"><div class="label">JWT</div>
+          <div class="value mono">${esc(a.jwt || 'не получен')}</div></div>
+        <div class="info-item"><div class="label">VK ID</div>
+          <div class="value">${esc(p.vk_id || '—')}</div></div>
+        <div class="info-item"><div class="label">VK пароль</div>
+          <div class="value">${esc(p.vk_pass || '—')}</div></div>
+        <div class="info-item"><div class="label">Twinby ID</div>
+          <div class="value">${esc(a.user_id || '—')}</div></div>
+        <div class="info-item"><div class="label">Имя</div>
+          <div class="value">${esc(a.name || '—')}</div></div>
+        <div class="info-item"><div class="label">Лайков</div>
+          <div class="value">${a.likes_done || 0}</div></div>
+        <div class="info-item"><div class="label">Координаты</div>
+          <div class="value">${esc(a.latitude || '—')}, ${esc(a.longitude || '—')}</div></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Настройки фильтра</div>
+      <div class="form-row">
+        <div class="form-group" style="max-width:100px"><label>Радиус</label>
+          <input type="number" value="${a.distance || 100}" onchange="updAnketa('${esc(presetName)}','${esc(city)}','distance',+this.value)"></div>
+        <div class="form-group" style="max-width:80px"><label>Возраст от</label>
+          <input type="number" value="${a.min_age || 18}" onchange="updAnketa('${esc(presetName)}','${esc(city)}','min_age',+this.value)"></div>
+        <div class="form-group" style="max-width:80px"><label>до</label>
+          <input type="number" value="${a.max_age || 35}" onchange="updAnketa('${esc(presetName)}','${esc(city)}','max_age',+this.value)"></div>
+        <div class="form-group" style="max-width:120px"><label>Пол</label>
+          <select onchange="updAnketa('${esc(presetName)}','${esc(city)}','filter_gender',this.value)">
+            <option value="f"${a.filter_gender==='f'?' selected':''}>Девушки</option>
+            <option value="m"${a.filter_gender==='m'?' selected':''}>Парни</option>
+            <option value="n"${a.filter_gender==='n'?' selected':''}>Все</option>
+          </select></div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      ${a.jwt ? `<button class="btn btn-ghost" onclick="copyJwt('${esc(a.jwt)}')">📋 Copy JWT</button>` : ''}
+      <button class="btn btn-primary" onclick="registerAnketa('${esc(presetName)}','${esc(city)}')">🔑 Зарегать JWT</button>
+      ${a.jwt ? `<button class="btn btn-success" onclick="applyAnketa('${esc(presetName)}','${esc(city)}')">📡 Применить фильтр</button>` : ''}
+      ${a.jwt ? `<button class="btn btn-ghost" onclick="openSwipeFor('${esc(presetName)}','${esc(city)}')">💘 Перейти к свайпам</button>` : ''}
+    </div>
+  </div>`;
+}
+
+// ---- Preset actions ----
+function createPreset() {
+  const name = document.getElementById('newPName').value.trim();
+  const vk = document.getElementById('newPVk').value.trim();
+  if (!name) { toast('Введи имя пресета', 'err'); return; }
+  if (STATE.presets[name]) { toast('Уже существует', 'err'); return; }
+  let vk_id='', vk_pass='', vk_token='';
+  if (vk) {
+    const parts = vk.split(':');
+    if (parts.length >= 3) { vk_id = parts[0]; vk_pass = parts[1]; vk_token = parts.slice(2).join(':'); }
+    else if (parts.length === 2) { vk_id = parts[0]; vk_token = parts[1]; }
+    else { vk_token = vk; }
+  }
+  STATE.presets[name] = { vk_id, vk_pass, vk_token, ankety: {} };
+  savePresets(); render(); toast('Пресет создан');
+  log(`Пресет "${name}" создан`);
+  document.getElementById('presetCount').textContent = Object.keys(STATE.presets).length;
+}
+
+function deletePreset(name) {
+  if (!confirm(`Удалить "${name}"?`)) return;
+  delete STATE.presets[name];
+  if (STATE.openPreset === name) { STATE.openPreset = null; STATE.openAnketa = null; }
+  savePresets(); render();
+  document.getElementById('presetCount').textContent = Object.keys(STATE.presets).length;
+  log(`Пресет "${name}" удалён`);
+}
+
+function togglePreset(name) {
+  STATE.openPreset = STATE.openPreset === name ? null : name;
+  STATE.openAnketa = null;
+  render();
+}
+
+function toggleAnketa(city) {
+  STATE.openAnketa = STATE.openAnketa === city ? null : city;
+  render();
+}
+
+function updPreset(name, field, value) {
+  if (STATE.presets[name]) { STATE.presets[name][field] = value; savePresets(); }
+}
+
+function updAnketa(preset, city, field, value) {
+  const a = STATE.presets[preset]?.ankety?.[city];
+  if (a) { a[field] = value; savePresets(); }
+}
+
+function addAnketa(presetName) {
+  const city = document.getElementById(`newACity_${presetName}`)?.value.trim();
+  const lat = document.getElementById(`newALat_${presetName}`)?.value.trim();
+  const lon = document.getElementById(`newALon_${presetName}`)?.value.trim();
+  if (!city) { toast('Введи город', 'err'); return; }
+  if (!STATE.presets[presetName].ankety) STATE.presets[presetName].ankety = {};
+  if (STATE.presets[presetName].ankety[city]) { toast('Уже есть', 'err'); return; }
+  STATE.presets[presetName].ankety[city] = {
+    jwt: '', user_id: '', name: '',
+    latitude: lat, longitude: lon,
+    distance: 100, min_age: 18, max_age: 35, filter_gender: 'f',
+    likes_done: 0
+  };
+  savePresets(); render();
+  log(`Анкета "${city}" добавлена в "${presetName}"`);
+}
+
+function deleteAnketa(preset, city) {
+  if (!confirm(`Удалить анкету "${city}"?`)) return;
+  delete STATE.presets[preset].ankety[city];
+  if (STATE.openAnketa === city) STATE.openAnketa = null;
+  savePresets(); render();
+  log(`Анкета "${city}" удалена`);
+}
+
+async function registerAnketa(presetName, city) {
+  const p = STATE.presets[presetName];
+  if (!p?.vk_token) { toast('Нет VK токена', 'err'); return; }
+  const a = p.ankety[city];
+  log(`Регистрирую ${city}...`);
+  toast(`Регистрирую ${city}...`);
+  const d = await api('/preset-register', { method: 'POST',
+    body: { vk_token: p.vk_token, city, latitude: a.latitude || '', longitude: a.longitude || '' } });
+  if (d.ok) {
+    a.jwt = d.jwt || ''; a.user_id = d.user_id || ''; a.name = d.name || '';
+    savePresets(); render();
+    log(`${city}: JWT получен (${d.user_id} ${d.name})`);
+    toast(`${city}: JWT ✓`);
+  } else {
+    log(`${city}: ошибка — ${d.error}`);
+    toast(`${city}: ${d.error}`, 'err');
+  }
+}
+
+async function registerAll(presetName) {
+  const p = STATE.presets[presetName];
+  if (!p) return;
+  for (const city of Object.keys(p.ankety || {})) {
+    await registerAnketa(presetName, city);
+  }
+}
+
+async function applyAnketa(presetName, city) {
+  const a = STATE.presets[presetName]?.ankety?.[city];
+  if (!a?.jwt) { toast('Нет JWT', 'err'); return; }
+  log(`Применяю ${city}...`);
+  const d = await api('/apply-preset', { method: 'POST', body: { token: a.jwt, preset: a } });
+  log(`${city}: ${d.log || 'done'}`);
+  toast(d.log || 'Применено');
+}
+
+function copyJwt(jwt) {
+  navigator.clipboard.writeText(jwt);
+  toast('JWT скопирован');
+}
+
+function openSwipeFor(presetName, city) {
+  const a = STATE.presets[presetName]?.ankety?.[city];
+  if (!a?.jwt) return;
+  STATE.swipeToken = a.jwt;
+  showPage('swipe');
+}
+
+// ==================== SWIPE ====================
+function renderSwipe(c) {
+  if (!c) c = document.getElementById('pageContent');
+
+  // Quick token picker from presets
+  let tokenPicker = '';
+  for (const [pname, p] of Object.entries(STATE.presets)) {
+    for (const [city, a] of Object.entries(p.ankety || {})) {
+      if (a.jwt) {
+        tokenPicker += `<button class="btn btn-ghost btn-sm" onclick="setSwipeToken('${esc(a.jwt)}','${esc(pname)} / ${esc(city)}')">${esc(pname)} / ${esc(city)}</button> `;
+      }
+    }
+  }
+
+  let html = `<div class="card">
+    <div class="form-row">
+      <div class="form-group" style="flex:3"><label>JWT токен</label>
+        <input type="text" id="swipeToken" value="${esc(STATE.swipeToken)}" placeholder="Вставь JWT..."></div>
+      <div class="form-group" style="flex:0;min-width:auto;display:flex;align-items:end;gap:6px">
+        <button class="btn btn-primary" onclick="fetchFeed()">📡 Загрузить</button>
+        <button class="btn btn-success" onclick="autoLike()">💚 Автолайк</button>
+      </div>
+    </div>
+    ${tokenPicker ? `<div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">${tokenPicker}</div>` : ''}
+  </div>`;
+
+  if (STATE.feedData.length) {
+    html += `<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+      <span style="color:var(--text2);font-size:13px">Загружено: ${STATE.feedData.length} анкет</span>
+      <button class="btn btn-ghost btn-sm" onclick="likeAll()">💚 Лайкнуть всех</button>
+    </div>`;
+    html += '<div class="feed-grid">';
+    for (const u of STATE.feedData) {
+      html += `<div class="feed-card">
+        ${u.photo ? `<img src="${esc(u.photo)}" alt="" loading="lazy" onerror="this.style.display='none'">` : '<div style="height:220px;background:var(--bg3);display:flex;align-items:center;justify-content:center;color:var(--text3)">нет фото</div>'}
+        <div class="info">
+          <div class="name">${esc(u.name)}${u.age ? ', ' + u.age : ''}</div>
+          <div class="meta">${esc(u.city || '')}${u.compatibility ? ' · ' + u.compatibility + '%' : ''}</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-success btn-sm" style="flex:1" onclick="swipeAction('${esc(u.id)}',0)">💚</button>
+          <button class="btn btn-danger btn-sm" style="flex:1" onclick="swipeAction('${esc(u.id)}',1)">✕</button>
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  } else {
+    html += '<div class="empty"><div class="icon">💘</div><p>Загрузи ленту чтобы увидеть анкеты</p></div>';
+  }
+  c.innerHTML = html;
+}
+
+function setSwipeToken(jwt, label) {
+  STATE.swipeToken = jwt;
+  document.getElementById('swipeToken').value = jwt;
+  toast(`Токен: ${label}`);
+}
+
+async function fetchFeed() {
+  const token = document.getElementById('swipeToken')?.value?.trim() || STATE.swipeToken;
+  if (!token) { toast('Вставь JWT', 'err'); return; }
+  STATE.swipeToken = token;
+  log('Загружаю ленту...');
+  toast('Загружаю ленту...');
+  const d = await api('/api/feed', { method: 'POST', body: { token } });
+  if (d.ok) {
+    STATE.feedData = d.feed || [];
+    log(`Загружено ${d.count} анкет`);
+    toast(`Загружено: ${d.count}`);
+  } else {
+    log(`Ошибка ленты: ${d.error}`);
+    toast(d.error, 'err');
+  }
+  render();
+}
+
+async function swipeAction(uid, type) {
+  const token = STATE.swipeToken;
+  if (!token) return;
+  const d = await api('/api/action', { method: 'POST', body: { token, user_id: uid, type } });
+  if (d.ok) {
+    STATE.feedData = STATE.feedData.filter(u => u.id !== uid);
+    toast(type === 0 ? '💚 Лайк' : '✕ Дизлайк');
+    render();
+  } else { toast(d.error, 'err'); }
+}
+
+async function likeAll() {
+  if (!confirm(`Лайкнуть ${STATE.feedData.length} анкет?`)) return;
+  for (const u of [...STATE.feedData]) {
+    await swipeAction(u.id, 0);
+    await new Promise(r => setTimeout(r, 300));
+  }
+}
+
+async function autoLike() {
+  const token = document.getElementById('swipeToken')?.value?.trim() || STATE.swipeToken;
+  if (!token) { toast('Вставь JWT', 'err'); return; }
+  STATE.swipeToken = token;
+  toast('Автолайк запущен...');
+  log('Автолайк запущен');
+  const d = await api('/api/auto-like', { method: 'POST', body: { token } });
+  if (d.ok) {
+    log(`Автолайк: ${d.liked} лайков, ${d.errors} ошибок, ${d.rounds} раундов. ${d.stopped_reason || ''}`);
+    toast(`Автолайк: ${d.liked} лайков`);
+  } else { toast(d.error, 'err'); }
+}
+
+// ==================== PHOTOS ====================
+function renderPhotos(c) {
+  if (!c) c = document.getElementById('pageContent');
+
+  let tokenPicker = '';
+  for (const [pname, p] of Object.entries(STATE.presets)) {
+    for (const [city, a] of Object.entries(p.ankety || {})) {
+      if (a.jwt) {
+        tokenPicker += `<button class="btn btn-ghost btn-sm" onclick="setPhotoToken('${esc(a.jwt)}','${esc(pname)} / ${esc(city)}')">${esc(pname)} / ${esc(city)}</button> `;
+      }
+    }
+  }
+
+  c.innerHTML = `<div class="card">
+    <div class="form-row">
+      <div class="form-group" style="flex:3"><label>JWT токен</label>
+        <input type="text" id="photoToken" placeholder="Вставь JWT..."></div>
+      <div class="form-group" style="flex:0;min-width:auto;display:flex;align-items:end">
+        <button class="btn btn-primary" onclick="loadPhotos()">📷 Загрузить фото</button></div>
+    </div>
+    ${tokenPicker ? `<div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">${tokenPicker}</div>` : ''}
+  </div>
+  <div class="card">
+    <div class="form-group"><label>Загрузить фото</label>
+      <input type="file" id="photoFiles" accept="image/*" multiple style="padding:8px"></div>
+    <button class="btn btn-success" onclick="uploadPhotos()" style="margin-top:8px">⬆️ Загрузить</button>
+  </div>
+  <div id="photoGrid" style="margin-top:16px"></div>`;
+}
+
+function setPhotoToken(jwt, label) {
+  document.getElementById('photoToken').value = jwt;
+  toast(`Токен: ${label}`);
+}
+
+async function loadPhotos() {
+  const token = document.getElementById('photoToken')?.value?.trim();
+  if (!token) { toast('Вставь JWT', 'err'); return; }
+  const d = await api('/my-photos', { method: 'POST', body: { token } });
+  const grid = document.getElementById('photoGrid');
+  if (d.photos && d.photos.length) {
+    grid.innerHTML = '<div class="feed-grid">' + d.photos.map(p =>
+      `<div class="feed-card">
+        <img src="${esc(p.url)}" alt="" loading="lazy" style="height:180px" onerror="this.style.display='none'">
+        <div class="info"><div class="name">${p.is_avatar ? '⭐ Аватар' : 'Фото'}</div>
+          <div class="meta">order: ${p.order}</div></div>
+        <div class="actions">
+          <button class="btn btn-danger btn-sm" style="flex:1" onclick="deletePhoto('${esc(p.id)}')">🗑 Удалить</button>
+        </div></div>`
+    ).join('') + '</div>';
+  } else {
+    grid.innerHTML = '<div class="empty"><p>Нет фотографий</p></div>';
+  }
+}
+
+async function uploadPhotos() {
+  const token = document.getElementById('photoToken')?.value?.trim();
+  const files = document.getElementById('photoFiles')?.files;
+  if (!token) { toast('Вставь JWT', 'err'); return; }
+  if (!files?.length) { toast('Выбери фото', 'err'); return; }
+  for (let i = 0; i < files.length; i++) {
+    const fd = new FormData();
+    fd.append('token', token);
+    fd.append('order', String(i + 1));
+    fd.append('photos', files[i]);
+    const d = await api('/upload-photo', { method: 'POST', body: fd });
+    if (d.results) { toast(`Фото ${i + 1} загружено`); }
+    else { toast(`Ошибка фото ${i + 1}`, 'err'); }
+  }
+  loadPhotos();
+}
+
+async function deletePhoto(pid) {
+  const token = document.getElementById('photoToken')?.value?.trim();
+  if (!token) return;
+  await api('/delete-photo', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, photo_id: pid }) });
+  toast('Фото удалено');
+  loadPhotos();
+}
+
+// ==================== ACCOUNTS ====================
+function renderAccounts(c) {
+  if (!c) c = document.getElementById('pageContent');
+  let html = `<div class="card">
+    <div class="form-row">
+      <div class="form-group"><label>Метка</label>
+        <input type="text" id="accLabel" placeholder="main"></div>
+      <div class="form-group" style="flex:2"><label>VK Access Token</label>
+        <input type="text" id="accVkToken" placeholder="vk1.a.SQV..."></div>
+      <div class="form-group" style="flex:0;min-width:auto;display:flex;align-items:end">
+        <button class="btn btn-primary" onclick="addAccount()">+ Добавить</button></div>
+    </div></div>`;
+
+  const accs = Object.entries(STATE.accounts);
+  if (!accs.length) {
+    html += '<div class="empty"><div class="icon">🔑</div><p>Нет аккаунтов</p></div>';
+  }
+  for (const [label, acc] of accs) {
+    html += `<div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${esc(label)}${acc.name ? ' — ' + esc(acc.name) : ''}</div>
+          <div class="card-sub" style="font-family:monospace;font-size:11px">JWT: ${esc((acc.jwt || '').substring(0, 50))}...</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('${esc(acc.jwt)}');toast('JWT скопирован')">📋</button>
+          <button class="btn btn-danger btn-sm" onclick="removeAccount('${esc(label)}')">✕</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  c.innerHTML = html;
+}
+
+async function addAccount() {
+  const label = document.getElementById('accLabel')?.value.trim();
+  const vk_token = document.getElementById('accVkToken')?.value.trim();
+  if (!label || !vk_token) { toast('Заполни поля', 'err'); return; }
+  toast('Получаю JWT...');
+  const d = await api('/api/accounts', { method: 'POST', body: { label, vk_token } });
+  if (d.ok) {
+    await loadAccounts(); render();
+    toast(`Аккаунт ${label} добавлен`);
+    log(`Аккаунт "${label}" добавлен (${d.user_id})`);
+  } else { toast(d.error, 'err'); }
+}
+
+async function removeAccount(label) {
+  if (!confirm(`Удалить "${label}"?`)) return;
+  await api(`/api/accounts/${encodeURIComponent(label)}`, { method: 'DELETE' });
+  await loadAccounts(); render();
+  log(`Аккаунт "${label}" удалён`);
+}
+
+// ==================== LOG ====================
+function renderLog(c) {
+  if (!c) c = document.getElementById('pageContent');
+  c.innerHTML = `<div class="log-box" id="logBox">${STATE.logLines.length ? esc(STATE.logLines.join('\n')) : 'Лог пуст'}</div>
+    <button class="btn btn-ghost" style="margin-top:8px" onclick="STATE.logLines=[];render()">Очистить</button>`;
+}
+
+// ---- Init ----
+(async () => {
+  await Promise.all([loadPresets(), loadAccounts()]);
+  render();
+})();
+</script>
+</body>
+</html>

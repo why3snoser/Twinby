@@ -2400,5 +2400,175 @@ def inject_accounts_js(response):
     return response
 
 
+# ===================== JSON API для нового фронта =====================
+
+@app.route("/api/accounts", methods=["GET"])
+def api_accounts_list():
+    """Список всех аккаунтов."""
+    return jsonify(ACCOUNTS)
+
+
+@app.route("/api/accounts", methods=["POST"])
+def api_accounts_add():
+    """Добавить аккаунт через VK токен. JSON: {label, vk_token}"""
+    import httpx
+    data = request.get_json(force=True)
+    label = (data.get("label") or "").strip()
+    vk_token = (data.get("vk_token") or "").strip()
+    if not label or not vk_token:
+        return jsonify({"ok": False, "error": "need label and vk_token"})
+    try:
+        resp = httpx.post(
+            f"{tw.BASE}{AUTH_VK_PATH}",
+            json={"provider": "vk", "token": vk_token},
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"ok": False, "error": f"Статус {resp.status_code}: {resp.text[:300]}"})
+        rd = resp.json()
+        jwt_token = rd.get("accessToken", "")
+        if not jwt_token:
+            return jsonify({"ok": False, "error": "Нет accessToken в ответе"})
+        user_name, user_id = "", ""
+        try:
+            me_resp = httpx.get(
+                f"{tw.BASE}{tw.API['me']}",
+                headers={"User-Agent": tw.UA, "Accept": "application/json",
+                         "Authorization": f"JWT {jwt_token}"},
+                timeout=15,
+            )
+            if me_resp.status_code < 400:
+                me = me_resp.json()
+                user_name = me.get("name", "")
+                user_id = str(me.get("id", ""))
+        except Exception:
+            pass
+        ACCOUNTS[label] = {"vk_token": vk_token, "jwt": jwt_token,
+                           "user_id": user_id, "name": user_name}
+        _save_accounts(ACCOUNTS)
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/accounts/<label>", methods=["DELETE"])
+def api_accounts_remove(label):
+    if label in ACCOUNTS:
+        del ACCOUNTS[label]
+        _save_accounts(ACCOUNTS)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/feed", methods=["POST"])
+def api_feed():
+    """Загрузить ленту. JSON: {token}"""
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    if not token:
+        return jsonify({"ok": False, "error": "need token"})
+    try:
+        log_buf = io.StringIO()
+        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"))
+        result = c.call("GET", DATING_SEARCH_PATH)
+        feed = _parse_feed(result)
+        return jsonify({"ok": True, "feed": feed, "count": len(feed)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/action", methods=["POST"])
+def api_action():
+    """Лайк/дизлайк. JSON: {token, user_id, type: 0|1}"""
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    user_id = str(data.get("user_id", ""))
+    action_type = int(data.get("type", 0))
+    if not token or not user_id:
+        return jsonify({"ok": False, "error": "need token and user_id"})
+    try:
+        log_buf = io.StringIO()
+        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"))
+        c.call("POST", DATING_ACTION_PATH, json={"user": user_id, "type": action_type})
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/auto-like", methods=["POST"])
+def api_auto_like():
+    """Автолайк. JSON: {token, max_rounds?}"""
+    import random as rnd
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    max_rounds = int(data.get("max_rounds", 50))
+    if not token:
+        return jsonify({"ok": False, "error": "need token"})
+    try:
+        log_buf = io.StringIO()
+        c = _make_web_client(token, False, lambda m: log_buf.write(m + "\n"))
+        liked, errors, rounds = 0, 0, 0
+        stopped_reason = ""
+        while rounds < max_rounds:
+            rounds += 1
+            try:
+                result = c.call("GET", DATING_SEARCH_PATH)
+            except RuntimeError as e:
+                stopped_reason = f"Ошибка ленты: {e}"
+                break
+            batch = _parse_feed(result)
+            if not batch:
+                stopped_reason = "Лента пуста"
+                break
+            for u in batch:
+                try:
+                    c.call("POST", DATING_ACTION_PATH, json={"user": u["id"], "type": 0})
+                    liked += 1
+                except RuntimeError as e:
+                    errors += 1
+                    if "429" in str(e) or "limit" in str(e).lower():
+                        stopped_reason = f"Лимит лайков"
+                        break
+                    if errors >= 5:
+                        stopped_reason = "Много ошибок"
+                        break
+                time.sleep(rnd.uniform(0.5, 1.5))
+            if stopped_reason:
+                break
+        return jsonify({"ok": True, "liked": liked, "errors": errors,
+                        "rounds": rounds, "stopped_reason": stopped_reason})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/profile", methods=["POST"])
+def api_profile():
+    """Получить профиль. JSON: {token}"""
+    import httpx
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    if not token:
+        return jsonify({"ok": False, "error": "need token"})
+    try:
+        resp = httpx.get(
+            f"{tw.BASE}{tw.API['me']}",
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Authorization": f"JWT {token}"},
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"ok": False, "error": f"Статус {resp.status_code}"})
+        return jsonify({"ok": True, "profile": resp.json()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+# ---- Новый SPA-фронт ----
+@app.route("/spa")
+def spa_page():
+    return app.send_static_file("index.html")
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
