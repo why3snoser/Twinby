@@ -707,13 +707,26 @@ AUTH_VK_PATH = "/api/auth/v2/oauth/by-token"   # прямой VK access token �
 DATING_SEARCH_PATH = "/api/users/search/?size=50"  # GET → список анкет для свайпа (confirmed via mitmproxy)
 USERS_PUBLIC_PATH = "/api/users/{uid}/"           # GET → публичный профиль по ID
 
-# Хранилище аккаунтов в памяти (сбрасывается при рестарте). Формат: {label: {vk_token, jwt, user_id, name}}
-ACCOUNTS: dict[str, dict] = {}
+# Хранилище аккаунтов — файл, переживает рестарт. Формат: {label: {vk_token, jwt, user_id, name}}
+ACCOUNTS_FILE = Path(__file__).parent / "accounts.json"
+
+def _load_accounts() -> dict:
+    if ACCOUNTS_FILE.exists():
+        try:
+            return json.loads(ACCOUNTS_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+def _save_accounts(data: dict):
+    ACCOUNTS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+ACCOUNTS: dict[str, dict] = _load_accounts()
 
 def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
     """Layout wrapper. tab = 'main'|'accounts'|'swipe'."""
     tabs_html = ""
-    for t, href, label in [("main", "/", "Онбординг"), ("accounts", "/accounts", "Аккаунты"), ("swipe", "/swipe", "Свайпы")]:
+    for t, href, label in [("main", "/", "Онбординг"), ("accounts", "/accounts", "Аккаунты"), ("swipe", "/swipe", "Свайпы"), ("presets", "/presets", "Пресеты")]:
         cls = "active" if t == tab else ""
         tabs_html += f'<a href="{href}" class="{cls}">{label}</a>'
     log_html = f'<h3 style="margin-top:30px">Консоль</h3><pre>{log}</pre>' if log else ""
@@ -815,6 +828,72 @@ PAGE_MAIN = """
     <label><input type="checkbox" name="vflip"> Перевернуть видео (vflip)</label>
     <p class="hint">Видео автоматически конвертируется в формат Android MediaRecorder (640x480, Baseline, без аудио).
       Если поле пустое — шаг пропускается.</p>
+  </fieldset>
+
+  <fieldset><legend>Фото профиля</legend>
+    <p class="hint">Загрузи фото для анкеты. Первое фото = аватар. При "Bad photo" автоматически попробует следующее.</p>
+    <div id="photoSection">
+      <div id="currentPhotos" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"></div>
+      <input type="file" id="photoFiles" multiple accept="image/*" style="margin-bottom:6px">
+      <label class="l">Кол-во фото для загрузки (макс)</label>
+      <input type="number" id="photoCount" value="3" min="1" max="10" style="max-width:80px">
+      <button type="button" class="go" onclick="uploadPhotos()" style="margin-top:6px">Загрузить фото</button>
+      <div id="photoLog" style="margin-top:6px;font-size:13px"></div>
+    </div>
+<script>
+function getToken(){
+  const t=document.querySelector('textarea[name=token]');
+  return t?(t.value||'').trim().replace(/^["']+|["']+$/g,''):'';
+}
+function loadCurrentPhotos(){
+  const token=getToken(); if(!token) return;
+  fetch('/my-photos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})})
+  .then(r=>r.json()).then(data=>{
+    const box=document.getElementById('currentPhotos'); box.innerHTML='';
+    (data.photos||[]).forEach(p=>{
+      const div=document.createElement('div');
+      div.style.cssText='position:relative;width:80px;height:80px;border-radius:8px;overflow:hidden;border:2px solid '+(p.is_avatar?'#4f4':'#555');
+      div.innerHTML='<img src="'+p.url+'" style="width:100%;height:100%;object-fit:cover">'
+        +'<div style="position:absolute;top:0;right:0;background:rgba(0,0,0,.7);color:#f66;cursor:pointer;padding:2px 5px;font-size:11px" onclick="deletePhoto(\''+p.id+'\')">✕</div>'
+        +'<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.7);color:#fff;font-size:10px;text-align:center">'+( p.is_avatar?'аватар':'#'+p.order)+'</div>';
+      box.appendChild(div);
+    });
+  });
+}
+function deletePhoto(pid){
+  if(!confirm('Удалить фото?')) return;
+  const token=getToken();
+  fetch('/delete-photo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,photo_id:pid})})
+  .then(r=>r.json()).then(d=>{
+    document.getElementById('photoLog').innerText=d.ok?'Удалено':'Ошибка: '+(d.error||d.status);
+    loadCurrentPhotos();
+  });
+}
+function uploadPhotos(){
+  const token=getToken(); if(!token){alert('Вставь JWT');return;}
+  const files=document.getElementById('photoFiles').files;
+  const maxCount=parseInt(document.getElementById('photoCount').value)||3;
+  if(!files.length){alert('Выбери файлы');return;}
+  const log=document.getElementById('photoLog');
+  const fd=new FormData();
+  fd.append('token',token);
+  fd.append('order','1');
+  const count=Math.min(files.length,maxCount);
+  for(let i=0;i<count;i++) fd.append('photos',files[i]);
+  log.innerText='Загружаю '+count+' фото...';
+  fetch('/upload-photo',{method:'POST',body:fd}).then(r=>r.json()).then(data=>{
+    const res=data.results||[];
+    let ok=0,bad=0,badFiles=[];
+    res.forEach(r=>{
+      if(r.ok) ok++;
+      else{ bad++; badFiles.push(r.filename+': '+(r.message||'error')); }
+    });
+    log.innerHTML='Загружено: '+ok+', отклонено: '+bad+(badFiles.length?'<br>'+badFiles.join('<br>'):'');
+    loadCurrentPhotos();
+  }).catch(e=>{log.innerText='Ошибка: '+e;});
+}
+document.addEventListener('DOMContentLoaded',()=>{setTimeout(loadCurrentPhotos,500);});
+</script>
   </fieldset>
 
   <fieldset><legend>Профиль (ничего не выбрано = не трогать)</legend>
@@ -1437,6 +1516,7 @@ def accounts_page():
 
         if action == "remove" and label in ACCOUNTS:
             del ACCOUNTS[label]
+            _save_accounts(ACCOUNTS)
             tee(f"Аккаунт '{label}' удалён")
 
         elif action == "add":
@@ -1487,6 +1567,7 @@ def accounts_page():
                         "user_id": user_id,
                         "name": user_name,
                     }
+                    _save_accounts(ACCOUNTS)
                     tee(f"Аккаунт '{label}' добавлен (JWT получен, id={user_id}, name={user_name})")
                     tee(f"JWT: {jwt_token[:80]}...")
                 except Exception as e:
@@ -1783,6 +1864,329 @@ def city_search():
         return jsonify(resp.json())
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
+# ---- API: загрузка фото ----
+@app.route("/upload-photo", methods=["POST"])
+def upload_photo():
+    """Загрузить фото в анкету. multipart: token, order, file(s)"""
+    token = (request.form.get("token") or "").strip().strip('"\'')
+    if not token:
+        return jsonify({"error": "need token"})
+    order = int(request.form.get("order", 1))
+    files = request.files.getlist("photos")
+    if not files:
+        return jsonify({"error": "no files"})
+
+    import httpx
+    results = []
+    for i, f in enumerate(files):
+        cur_order = order + i
+        try:
+            file_bytes = f.read()
+            resp = httpx.post(
+                f"{tw.BASE}/api/photo/",
+                headers={"User-Agent": tw.UA, "Authorization": f"JWT {token}"},
+                files={"file": (f.filename or f"photo_{cur_order}.jpg", file_bytes, f.content_type or "image/jpeg")},
+                data={"order": str(cur_order), "type": "photo"},
+                timeout=30,
+            )
+            if resp.status_code == 201:
+                r = resp.json()
+                results.append({"ok": True, "id": r.get("id"), "order": r.get("order"),
+                                "file": r.get("file"), "filename": f.filename})
+            elif resp.status_code == 403:
+                body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                results.append({"ok": False, "status": 403,
+                                "message": body.get("Message", "Bad photo"),
+                                "filename": f.filename, "order": cur_order})
+            else:
+                results.append({"ok": False, "status": resp.status_code,
+                                "message": resp.text[:200], "filename": f.filename})
+        except Exception as e:
+            results.append({"ok": False, "message": str(e), "filename": f.filename})
+
+    return jsonify({"results": results})
+
+
+@app.route("/delete-photo", methods=["POST"])
+def delete_photo():
+    """Удалить фото. JSON: {token, photo_id}"""
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    photo_id = (data.get("photo_id") or "").strip()
+    if not token or not photo_id:
+        return jsonify({"error": "need token and photo_id"})
+    import httpx
+    try:
+        resp = httpx.delete(
+            f"{tw.BASE}/api/photo/{photo_id}/",
+            headers={"User-Agent": tw.UA, "Authorization": f"JWT {token}"},
+            timeout=15,
+        )
+        return jsonify({"ok": resp.status_code == 204, "status": resp.status_code})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/reorder-photo", methods=["POST"])
+def reorder_photo():
+    """Сменить порядок / заменить фото. multipart: token, photo_id, order, file (optional)"""
+    token = (request.form.get("token") or "").strip().strip('"\'')
+    photo_id = (request.form.get("photo_id") or "").strip()
+    new_order = request.form.get("order", "0")
+    if not token or not photo_id:
+        return jsonify({"error": "need token and photo_id"})
+    import httpx
+    try:
+        kw = {"data": {"order": new_order, "type": "photo"}}
+        f = request.files.get("file")
+        if f:
+            kw["files"] = {"file": (f.filename, f.read(), f.content_type or "image/jpeg")}
+        resp = httpx.patch(
+            f"{tw.BASE}/api/photo/{photo_id}/",
+            headers={"User-Agent": tw.UA, "Authorization": f"JWT {token}"},
+            timeout=30, **kw,
+        )
+        if resp.status_code in (200, 201):
+            return jsonify({"ok": True, **resp.json()})
+        else:
+            body = {}
+            try:
+                body = resp.json()
+            except Exception:
+                pass
+            return jsonify({"ok": False, "status": resp.status_code,
+                            "message": body.get("Message", resp.text[:200])})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/my-photos", methods=["POST"])
+def my_photos():
+    """Получить список фото анкеты. JSON: {token}"""
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    if not token:
+        return jsonify({"error": "need token"})
+    import httpx
+    try:
+        resp = httpx.get(
+            f"{tw.BASE}/api/users/me/",
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Authorization": f"JWT {token}"},
+            timeout=15,
+        )
+        me = resp.json()
+        avatar = me.get("avatar")
+        photos = me.get("photos", [])
+        result = []
+        if avatar and isinstance(avatar, dict):
+            result.append({"id": avatar.get("id"), "url": avatar.get("preview") or avatar.get("file"),
+                           "order": avatar.get("order", 0), "is_avatar": True})
+        for p in photos:
+            if isinstance(p, dict):
+                result.append({"id": p.get("id"), "url": p.get("preview") or p.get("file"),
+                               "order": p.get("order"), "is_avatar": False})
+        return jsonify({"photos": result})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+# ---- API: пресеты (server-side JSON storage) ----
+PRESETS_FILE = Path(__file__).parent / "presets.json"
+
+def _load_presets():
+    if PRESETS_FILE.exists():
+        try:
+            return json.loads(PRESETS_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+def _save_presets(data):
+    PRESETS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+@app.route("/api/presets", methods=["GET"])
+def get_presets():
+    return jsonify(_load_presets())
+
+@app.route("/api/presets", methods=["POST"])
+def save_presets():
+    data = request.get_json(force=True)
+    _save_presets(data)
+    return jsonify({"ok": True})
+
+
+@app.route("/apply-preset", methods=["POST"])
+def apply_preset():
+    """Применить пресет: location + city + filter через Flask-прокси (обход CORS)."""
+    import httpx
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    p = data.get("preset", {})
+    if not token:
+        return jsonify({"ok": False, "log": "Нет токена"})
+
+    headers = {"User-Agent": tw.UA, "Authorization": f"JWT {token}",
+               "Content-Type": "application/json", "Accept": "application/json"}
+    log_lines = []
+
+    # 1) PATCH /api/users/me/ — location + city
+    me_body = {}
+    lat_s = str(p.get("latitude", "")).strip()
+    lon_s = str(p.get("longitude", "")).strip()
+    if lat_s and lon_s:
+        me_body["location"] = f"POINT({lat_s} {lon_s})"
+    city_name = p.get("city_name", "")
+    if city_name:
+        me_body["nameCity"] = city_name
+    if me_body:
+        try:
+            r = httpx.patch(f"{tw.BASE}/api/users/me/", headers=headers,
+                            json=me_body, timeout=15)
+            log_lines.append(f"Профиль: {r.status_code}")
+        except Exception as e:
+            log_lines.append(f"Профиль ошибка: {e}")
+
+    # 2) PATCH /api/users/me/filter/ — фильтры
+    filter_body = {}
+    if p.get("min_age"):
+        filter_body["minAges"] = int(p["min_age"])
+    if p.get("max_age"):
+        filter_body["maxAges"] = int(p["max_age"])
+    if p.get("distance"):
+        filter_body["distance"] = int(p["distance"])
+    if p.get("filter_gender"):
+        filter_body["gender"] = p["filter_gender"]
+    if filter_body:
+        try:
+            r = httpx.patch(f"{tw.BASE}/api/users/me/filter/", headers=headers,
+                            json=filter_body, timeout=15)
+            log_lines.append(f"Фильтр: {r.status_code}")
+        except Exception as e:
+            log_lines.append(f"Фильтр ошибка: {e}")
+
+    log_lines.append("Готово!")
+    return jsonify({"ok": True, "log": "\n".join(log_lines)})
+
+
+# ---- Вкладка: Пресеты ----
+PAGE_PRESETS = """
+<h2>Пресеты</h2>
+<p class="hint">Пресет = набор настроек для анкеты (город, координаты, фильтры, привязанный аккаунт, фото).
+  Создай пресет, привяжи аккаунт и настрой — все данные сохраняются на сервере.</p>
+
+<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+  <input type="text" id="newPresetName" placeholder="Имя пресета" style="flex:1;min-width:200px">
+  <button class="go" onclick="createPreset()">+ Создать пресет</button>
+</div>
+
+<div id="presetsList"></div>
+
+<script>
+let PRESETS={};
+
+function loadPresets(){
+  fetch('/api/presets').then(r=>r.json()).then(data=>{
+    PRESETS=data||{};
+    renderPresets();
+  });
+}
+
+function savePresets(cb){
+  fetch('/api/presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(PRESETS)})
+  .then(r=>r.json()).then(d=>{if(cb)cb();});
+}
+
+function createPreset(){
+  const name=document.getElementById('newPresetName').value.trim();
+  if(!name){alert('Введи имя');return;}
+  if(PRESETS[name]){alert('Уже существует');return;}
+  PRESETS[name]={account:'',city_name:'',latitude:'',longitude:'',distance:100,
+    min_age:18,max_age:35,filter_gender:'f',photos:[],videos:[]};
+  savePresets(renderPresets);
+  document.getElementById('newPresetName').value='';
+}
+
+function deletePreset(name){
+  if(!confirm('Удалить пресет "'+name+'"?')) return;
+  delete PRESETS[name];
+  savePresets(renderPresets);
+}
+
+function updatePreset(name,field,value){
+  if(!PRESETS[name]) return;
+  PRESETS[name][field]=value;
+  savePresets();
+}
+
+function renderPresets(){
+  const box=document.getElementById('presetsList');
+  const accounts=window._ACCOUNTS||{};
+  const accOptions=Object.keys(accounts).map(k=>'<option value="'+k+'">'+k+' ('+( accounts[k].name||'')+')</option>').join('');
+
+  box.innerHTML=Object.entries(PRESETS).map(([name,p])=>{
+    return '<fieldset style="margin-bottom:16px"><legend>'+name+' <span style="cursor:pointer;color:#f66;font-size:13px" onclick="deletePreset(\''+name.replace(/'/g,"\\'")+'\')">удалить</span></legend>'
+    +'<div class="row"><div style="flex:1"><label class="l">Аккаунт</label>'
+    +'<select onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'account\',this.value)">'
+    +'<option value="">— не привязан —</option>'+accOptions.replace('value="'+( p.account||'')+'"','value="'+(p.account||'')+'" selected')
+    +'</select></div></div>'
+    +'<div class="row" style="margin-top:6px">'
+    +'<div><label class="l">Город</label><input type="text" value="'+(p.city_name||'')+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'city_name\',this.value)" placeholder="Москва"></div>'
+    +'<div><label class="l">Широта</label><input type="text" value="'+(p.latitude||'')+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'latitude\',this.value)" placeholder="55.7558" style="max-width:120px"></div>'
+    +'<div><label class="l">Долгота</label><input type="text" value="'+(p.longitude||'')+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'longitude\',this.value)" placeholder="37.6173" style="max-width:120px"></div>'
+    +'<div><label class="l">Радиус</label><input type="number" value="'+(p.distance||100)+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'distance\',parseInt(this.value))" style="max-width:80px"></div>'
+    +'</div>'
+    +'<div class="row" style="margin-top:6px">'
+    +'<div><label class="l">Возраст от</label><input type="number" value="'+(p.min_age||18)+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'min_age\',parseInt(this.value))" style="max-width:80px"></div>'
+    +'<div><label class="l">до</label><input type="number" value="'+(p.max_age||35)+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'max_age\',parseInt(this.value))" style="max-width:80px"></div>'
+    +'<div><label class="l">Пол</label><select onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'filter_gender\',this.value)">'
+    +'<option value="f"'+(p.filter_gender=='f'?' selected':'')+'>Девушки</option>'
+    +'<option value="m"'+(p.filter_gender=='m'?' selected':'')+'>Парни</option>'
+    +'<option value="n"'+(p.filter_gender=='n'?' selected':'')+'>Все</option></select></div>'
+    +'</div>'
+    +'<div style="margin-top:8px"><button class="go alt" onclick="applyPreset(\''+name.replace(/'/g,"\\'")+'\')">Применить пресет (установить фильтр + локацию)</button></div>'
+    +'</fieldset>';
+  }).join('');
+}
+
+function applyPreset(name){
+  const p=PRESETS[name]; if(!p) return;
+  const acc=window._ACCOUNTS[p.account];
+  if(!acc||!acc.jwt){alert('Привяжи аккаунт к пресету');return;}
+  const log=document.getElementById('presetLog')||document.createElement('div');
+  log.id='presetLog'; log.style.cssText='margin-top:12px;padding:8px;background:#1a1a1a;border-radius:6px;font-size:13px';
+  if(!document.getElementById('presetLog')) document.getElementById('presetsList').after(log);
+  log.innerText='Применяю пресет "'+name+'"...';
+
+  fetch('/apply-preset',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({token:acc.jwt,preset:p})})
+  .then(r=>r.json()).then(d=>{
+    log.innerText+='\\n'+(d.log||'done');
+  }).catch(e=>{log.innerText+='\\nОшибка: '+e;});
+}
+
+document.addEventListener('DOMContentLoaded',loadPresets);
+</script>
+"""
+
+@app.route("/presets")
+def presets_page():
+    return _render(PAGE_PRESETS, "presets", None, f={})
+
+
+# ---- Передаём ACCOUNTS в JS для пресетов ----
+_orig_render = _render.__wrapped__ if hasattr(_render, '__wrapped__') else None
+
+@app.after_request
+def inject_accounts_js(response):
+    if response.content_type and 'text/html' in response.content_type:
+        js = f'<script>window._ACCOUNTS={json.dumps(ACCOUNTS, ensure_ascii=False)};</script>'
+        data = response.get_data(as_text=True)
+        data = data.replace('</body>', js + '</body>')
+        response.set_data(data)
+    return response
 
 
 if __name__ == "__main__":
