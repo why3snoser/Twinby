@@ -960,12 +960,20 @@ PAGE_SWIPE = """
   {% endif %}
 
   <fieldset><legend>Фильтр поиска</legend>
-    <p class="hint">Фильтр + геолокация отправляются через API. Координаты задают точку поиска (не по IP).</p>
+    <p class="hint">Город задаётся через профиль (PATCH /api/users/me/). Анкеты ищутся в радиусе от него.</p>
     <div class="row">
+      <div style="flex:2">
+        <label class="l">Город</label>
+        <input type="text" id="swipe_city_name" name="city_name" value="{{ f.city_name }}" placeholder="Начни вводить город" autocomplete="off" oninput="swipeCitySearch(this.value)">
+        <input type="hidden" id="swipe_city_id" name="city_id" value="{{ f.city_id }}">
+        <div id="swipe_city_hints" style="max-height:160px;overflow-y:auto"></div>
+      </div>
       <div>
         <label class="l">Радиус, км</label>
         <input type="number" name="distance" value="{{ f.distance or 100 }}" min="1" max="300" style="max-width:120px">
       </div>
+    </div>
+    <div class="row" style="margin-top:8px">
       <div>
         <label class="l">Возраст от</label>
         <input type="number" name="min_age" value="{{ f.min_age or 18 }}" min="18" max="80" style="max-width:100px">
@@ -975,17 +983,6 @@ PAGE_SWIPE = """
         <input type="number" name="max_age" value="{{ f.max_age or 35 }}" min="18" max="80" style="max-width:100px">
       </div>
     </div>
-    <div class="row" style="margin-top:8px">
-      <div>
-        <label class="l">Широта (lat)</label>
-        <input type="text" name="latitude" value="{{ f.latitude or '59.9386' }}" placeholder="59.9386" style="max-width:150px">
-      </div>
-      <div>
-        <label class="l">Долгота (lon)</label>
-        <input type="text" name="longitude" value="{{ f.longitude or '30.3141' }}" placeholder="30.3141" style="max-width:150px">
-      </div>
-    </div>
-    <p class="hint" style="margin-top:4px">Питер: 59.9386, 30.3141 · Москва: 55.7558, 37.6173</p>
     <label class="l">Пол</label>
     <div class="chips">
       <label class="chip"><input type="radio" name="filter_gender" value="f" {{ 'checked' if f.filter_gender=='f' }}><span>Девушки</span></label>
@@ -994,6 +991,27 @@ PAGE_SWIPE = """
     </div>
     <button class="go alt" type="submit" name="mode" value="set_filter" style="margin-top:12px">Применить фильтр</button>
   </fieldset>
+<script>
+let _swipeCityTimer;
+function swipeCitySearch(q){
+  clearTimeout(_swipeCityTimer);
+  if(q.length<2){document.getElementById('swipe_city_hints').innerHTML='';return;}
+  _swipeCityTimer=setTimeout(()=>{
+    const token=document.getElementById('swipe_token').value;
+    fetch('/city-search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token,q:q})})
+    .then(r=>r.json()).then(data=>{
+      const list=Array.isArray(data)?data:(data.results||[]);
+      const box=document.getElementById('swipe_city_hints');
+      box.innerHTML=list.map(c=>{
+        const cid=c.id||'';const cname=(c.name||'').replace(/'/g,'');const reg=c.regionName||c.region||'';
+        return `<div style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #333"
+              onclick="document.getElementById('swipe_city_id').value='${cid}';document.getElementById('swipe_city_name').value='${cname}';document.getElementById('swipe_city_hints').innerHTML=''">
+          ${c.name}${reg?' <span class=hint>'+reg+'</span>':''}
+        </div>`;}).join('');
+    });
+  },300);
+}
+</script>
 
   <fieldset><legend>Лайк / дизлайк по ID</legend>
     <label class="l">ID анкеты</label>
@@ -1048,8 +1066,7 @@ DEFAULTS = dict(token="", profile_only=False, name="", birthday="", gender="m",
                 education="", children="", alcohol="", smoking="",
                 language=[], interest=[], zodiac=True, zodiac_touch=False, dry_run=False,
                 action_user_id="", fetch_count=10,
-                distance=100, min_age=18, max_age=35, filter_gender="f",
-                latitude="59.9386", longitude="30.3141")
+                distance=100, min_age=18, max_age=35, filter_gender="f")
 
 
 def resolve_by_ids(wanted: list[str], items: list[dict], what: str) -> list[dict]:
@@ -1501,19 +1518,21 @@ def swipe_page():
         f["min_age"] = request.form.get("min_age", "18").strip()
         f["max_age"] = request.form.get("max_age", "35").strip()
         f["filter_gender"] = request.form.get("filter_gender", "f").strip()
-        f["latitude"] = request.form.get("latitude", "59.9386").strip()
-        f["longitude"] = request.form.get("longitude", "30.3141").strip()
+        f["city_id"] = request.form.get("city_id", "").strip()
+        f["city_name"] = request.form.get("city_name", "").strip()
         mode = request.form.get("mode", "")
 
         try:
             c = _make_web_client(f["token"], False, tee)
 
             if mode == "set_filter":
-                # 1) Обновляем геолокацию профиля
-                lat = float(f["latitude"])
-                lon = float(f["longitude"])
-                tee(f"Обновляю геолокацию: lat={lat}, lon={lon}")
-                c.call("PATCH", tw.API["me"], json={"latitude": lat, "longitude": lon})
+                # 1) Обновляем город в профиле (если выбран)
+                if f["city_id"] and f["city_name"]:
+                    tee(f"Обновляю город: {f['city_name']} (id={f['city_id']})")
+                    c.call("PATCH", tw.API["me"], json={
+                        "city": f["city_id"],
+                        "nameCity": f["city_name"],
+                    })
 
                 # 2) Обновляем фильтр поиска
                 filter_body = {
@@ -1524,7 +1543,7 @@ def swipe_page():
                 }
                 tee(f"Обновляю фильтр: {json.dumps(filter_body)}")
                 c.call("PATCH", tw.API["filter"], json=filter_body)
-                tee("Фильтр и геолокация обновлены")
+                tee("Фильтр и город обновлены")
 
             elif mode in ("like", "dislike"):
                 uid = f["action_user_id"]
@@ -1707,7 +1726,7 @@ def city_search():
         import httpx
         resp = httpx.get(
             f"{tw.BASE}{API_PROFILE['city']}",
-            params={"name": q},
+            params={"name": q, "hasUsers": "false"},
             headers={"User-Agent": tw.UA, "Accept": "application/json",
                      "Authorization": f"JWT {token}"},
             timeout=15,
