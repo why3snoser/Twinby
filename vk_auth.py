@@ -461,28 +461,13 @@ def _vk_id_login(
             anonymous_token = m.group(1)
             log.append(f"  anon_token (regex): {anonymous_token[:50]}...")
 
-    # --- Диагностика: показать фрагменты HTML где могут быть токены ---
+    # auth_token пустой для незалогиненного пользователя — это нормально.
+    # VK принимает пустой auth_token в validateAccount и connect_authorize.
     if not auth_token:
-        # Найти все ключи, содержащие "token" или "access"
-        token_keys = re.findall(r'"([^"]*(?:token|access|auth)[^"]*)"\s*:\s*"([^"]{5,40})', page_html, re.IGNORECASE)
-        if token_keys:
-            log.append(f"  Token-like keys found: {token_keys[:10]}")
-        else:
-            log.append("  No token-like keys found in HTML")
-        # Показать фрагмент вокруг "init" если есть
-        idx = page_html.find("window.init")
-        if idx >= 0:
-            log.append(f"  window.init context: ...{page_html[idx:idx+300]}...")
-        else:
-            # Показать начало и конец скриптов
-            script_starts = [m.start() for m in re.finditer(r'<script', page_html)]
-            log.append(f"  <script> tags at positions: {script_starts[:10]}")
-            # Последние 500 символов перед </body>
-            body_end = page_html.rfind("</body>")
-            if body_end > 0:
-                log.append(f"  Before </body>: ...{page_html[max(0,body_end-300):body_end]}")
+        log.append("  auth_token empty (normal for new login)")
 
-        return {"ok": False, "error": "Не удалось получить auth_token из id.vk.ru/auth"}
+    if not anonymous_token:
+        return {"ok": False, "error": "Не удалось получить anonymous_token из id.vk.ru/auth"}
 
     time.sleep(0.3)
 
