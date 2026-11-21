@@ -652,11 +652,19 @@ def _vk_id_login(
         return {"ok": False, "error": f"Unexpected VK response type: {resp_type}"}
 
     # Извлечь токены из ответа
+    log.append(f"  connect_authorize OK response: {json.dumps(d_authorize, ensure_ascii=False)[:500]}")
     data = d_authorize.get("data", {})
+    if not isinstance(data, dict):
+        log.append(f"  data is {type(data).__name__}: {str(data)[:300]}")
+        return {"ok": False, "error": f"connect_authorize: unexpected data type {type(data).__name__}"}
     access_token = data.get("access_token", "")
     auth_info = data.get("auth_info", {})
+    if not isinstance(auth_info, dict):
+        auth_info = {}
     silent_token = auth_info.get("token", "")
     user_info = auth_info.get("user", {})
+    if not isinstance(user_info, dict):
+        user_info = {}
     user_id = user_info.get("id", 0)
     token_uuid = auth_info.get("uuid", my_uuid)
     token_hash = auth_info.get("hash", "")
