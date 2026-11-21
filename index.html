@@ -668,7 +668,8 @@ async function registerPreset(presetName) {
       const resp = await fetch('/api/register-account', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
-          vk_token:vk.token, name:SETTINGS.name, birthday:SETTINGS.birthday,
+          vk_token:vk.token, vk_id:vk.id, vk_pass:vk.pass,
+          name:SETTINGS.name, birthday:SETTINGS.birthday,
           gender:SETTINGS.gender, about:SETTINGS.about,
           latitude:city.lat, longitude:city.lon, city_name:city.name,
           height:SETTINGS.height, education:SETTINGS.education, children:SETTINGS.children,
@@ -827,7 +828,7 @@ async function recoverPreset(presetName) {
     try {
       const resp = await fetch('/api/recover-account', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({vk_token: vk.token})
+        body: JSON.stringify({vk_token: vk.token, vk_id: vk.id, vk_pass: vk.pass})
       });
       const d = await resp.json();
       if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
