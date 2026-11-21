@@ -224,12 +224,13 @@ def _solve_vk_captcha_rucaptcha(
             )
             d2 = r2.json()
 
-            if d2.get("status") == 1:
-                token = d2.get("request", "")
-                log.append(f"  [captcha] Solved! token: {token[:40]}...")
-                return token
+            status = d2.get("status")
+            req = str(d2.get("request", ""))
 
-            req = d2.get("request", "")
+            if status == 1:
+                log.append(f"  [captcha] Solved! token: {req[:60]}...")
+                return req
+
             if req == "CAPCHA_NOT_READY":
                 if i % 4 == 3:
                     log.append(f"  [captcha] Still solving... ({(i + 1) * 5}s)")
@@ -239,7 +240,7 @@ def _solve_vk_captcha_rucaptcha(
             log.append(f"  [captcha] res.php error: {req}")
             return None
         except Exception as e:
-            log.append(f"  [captcha] res.php failed: {e}")
+            log.append(f"  [captcha] res.php failed: {type(e).__name__}: {e}")
 
     log.append("  [captcha] Timeout waiting for solution")
     return None
