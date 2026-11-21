@@ -960,10 +960,10 @@ PAGE_SWIPE = """
   {% endif %}
 
   <fieldset><legend>Фильтр поиска</legend>
-    <p class="hint">Город задаётся через профиль (PATCH /api/users/me/). Анкеты ищутся в радиусе от него.</p>
+    <p class="hint">Локация задаётся координатами (POINT). Выбери город — координаты подставятся, или впиши вручную.</p>
     <div class="row">
       <div style="flex:2">
-        <label class="l">Город</label>
+        <label class="l">Город (поиск)</label>
         <input type="text" id="swipe_city_name" name="city_name" value="{{ f.city_name }}" placeholder="Начни вводить город" autocomplete="off" oninput="swipeCitySearch(this.value)">
         <input type="hidden" id="swipe_city_id" name="city_id" value="{{ f.city_id }}">
         <div id="swipe_city_hints" style="max-height:160px;overflow-y:auto"></div>
@@ -973,6 +973,17 @@ PAGE_SWIPE = """
         <input type="number" name="distance" value="{{ f.distance or 100 }}" min="1" max="300" style="max-width:120px">
       </div>
     </div>
+    <div class="row" style="margin-top:6px">
+      <div>
+        <label class="l">Широта (lat)</label>
+        <input type="text" id="swipe_lat" name="latitude" value="{{ f.latitude }}" placeholder="55.7558" style="max-width:150px">
+      </div>
+      <div>
+        <label class="l">Долгота (lon)</label>
+        <input type="text" id="swipe_lon" name="longitude" value="{{ f.longitude }}" placeholder="37.6173" style="max-width:150px">
+      </div>
+    </div>
+    <p class="hint" style="margin-top:2px">Популярные: Москва 55.7558/37.6173 · Питер 59.9386/30.3141 · Саратов 51.5462/46.0154</p>
     <div class="row" style="margin-top:8px">
       <div>
         <label class="l">Возраст от</label>
@@ -992,6 +1003,31 @@ PAGE_SWIPE = """
     <button class="go alt" type="submit" name="mode" value="set_filter" style="margin-top:12px">Применить фильтр</button>
   </fieldset>
 <script>
+const CITY_COORDS={
+  'Moscow':[55.7558,37.6173],'Москва':[55.7558,37.6173],
+  'Saint Petersburg':[59.9386,30.3141],'Санкт-Петербург':[59.9386,30.3141],'St Petersburg':[59.9386,30.3141],
+  'Saratov':[51.5462,46.0154],'Саратов':[51.5462,46.0154],
+  'Novosibirsk':[55.0084,82.9357],'Новосибирск':[55.0084,82.9357],
+  'Yekaterinburg':[56.8389,60.6057],'Екатеринбург':[56.8389,60.6057],
+  'Kazan':[55.7963,49.1088],'Казань':[55.7963,49.1088],
+  'Nizhny Novgorod':[56.2965,43.9361],'Нижний Новгород':[56.2965,43.9361],
+  'Chelyabinsk':[55.1644,61.4368],'Челябинск':[55.1644,61.4368],
+  'Samara':[53.1959,50.1002],'Самара':[53.1959,50.1002],
+  'Omsk':[54.9885,73.3242],'Омск':[54.9885,73.3242],
+  'Rostov-on-Don':[47.2357,39.7015],'Ростов-на-Дону':[47.2357,39.7015],
+  'Ufa':[54.7388,55.9721],'Уфа':[54.7388,55.9721],
+  'Krasnoyarsk':[56.0153,92.8932],'Красноярск':[56.0153,92.8932],
+  'Voronezh':[51.6683,39.1340],'Воронеж':[51.6683,39.1340],
+  'Perm':[58.0105,56.2502],'Пермь':[58.0105,56.2502],
+  'Volgograd':[48.7080,44.5133],'Волгоград':[48.7080,44.5133],
+  'Krasnodar':[45.0353,38.9753],'Краснодар':[45.0353,38.9753],
+  'Sochi':[43.5855,39.7231],'Сочи':[43.5855,39.7231],
+  'Tyumen':[57.1522,65.5272],'Тюмень':[57.1522,65.5272],
+};
+function swipeFillCoords(name){
+  const c=CITY_COORDS[name];
+  if(c){document.getElementById('swipe_lat').value=c[0];document.getElementById('swipe_lon').value=c[1];}
+}
 let _swipeCityTimer;
 function swipeCitySearch(q){
   clearTimeout(_swipeCityTimer);
@@ -1005,7 +1041,7 @@ function swipeCitySearch(q){
       box.innerHTML=list.map(c=>{
         const cid=c.id||'';const cname=(c.name||'').replace(/'/g,'');const reg=c.regionName||c.region||'';
         return `<div style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #333"
-              onclick="document.getElementById('swipe_city_id').value='${cid}';document.getElementById('swipe_city_name').value='${cname}';document.getElementById('swipe_city_hints').innerHTML=''">
+              onclick="document.getElementById('swipe_city_id').value='${cid}';document.getElementById('swipe_city_name').value='${cname}';swipeFillCoords('${cname}');document.getElementById('swipe_city_hints').innerHTML=''">
           ${c.name}${reg?' <span class=hint>'+reg+'</span>':''}
         </div>`;}).join('');
     });
@@ -1062,7 +1098,7 @@ function swipeCitySearch(q){
 
 DEFAULTS = dict(token="", profile_only=False, name="", birthday="", gender="m",
                 target_id="887657566886395905", interview_id="689835470004879361",
-                about="", height="", city_id="", city_name="", religion_id="",
+                about="", height="", city_id="", city_name="", latitude="", longitude="", religion_id="",
                 education="", children="", alcohol="", smoking="",
                 language=[], interest=[], zodiac=True, zodiac_touch=False, dry_run=False,
                 action_user_id="", fetch_count=10,
@@ -1520,19 +1556,30 @@ def swipe_page():
         f["filter_gender"] = request.form.get("filter_gender", "f").strip()
         f["city_id"] = request.form.get("city_id", "").strip()
         f["city_name"] = request.form.get("city_name", "").strip()
+        f["latitude"] = request.form.get("latitude", "").strip()
+        f["longitude"] = request.form.get("longitude", "").strip()
         mode = request.form.get("mode", "")
 
         try:
             c = _make_web_client(f["token"], False, tee)
 
             if mode == "set_filter":
-                # 1) Обновляем город в профиле (если выбран)
+                # 1) Обновляем location (координаты) + город в профиле
+                me_body = {}
+                lat_s, lon_s = f.get("latitude", ""), f.get("longitude", "")
+                if lat_s and lon_s:
+                    try:
+                        lat_f, lon_f = float(lat_s), float(lon_s)
+                        me_body["location"] = f"POINT({lat_f} {lon_f})"
+                        tee(f"Обновляю location: POINT({lat_f} {lon_f})")
+                    except ValueError:
+                        tee("Ошибка: некорректные координаты")
                 if f["city_id"] and f["city_name"]:
+                    me_body["city"] = f["city_id"]
+                    me_body["nameCity"] = f["city_name"]
                     tee(f"Обновляю город: {f['city_name']} (id={f['city_id']})")
-                    c.call("PATCH", tw.API["me"], json={
-                        "city": f["city_id"],
-                        "nameCity": f["city_name"],
-                    })
+                if me_body:
+                    c.call("PATCH", tw.API["me"], json=me_body)
 
                 # 2) Обновляем фильтр поиска
                 filter_body = {
@@ -1543,7 +1590,7 @@ def swipe_page():
                 }
                 tee(f"Обновляю фильтр: {json.dumps(filter_body)}")
                 c.call("PATCH", tw.API["filter"], json=filter_body)
-                tee("Фильтр и город обновлены")
+                tee("Фильтр, локация и город обновлены")
 
             elif mode in ("like", "dislike"):
                 uid = f["action_user_id"]
