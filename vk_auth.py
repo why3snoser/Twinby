@@ -21,6 +21,7 @@ import uuid as _uuid_mod
 from typing import Optional
 
 import httpx
+from curl_cffi import requests as cffi_requests
 
 # ---------------------------------------------------------------------------
 # Константы
@@ -41,6 +42,11 @@ UA_BROWSER = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 UA_DART = "Dart/3.11 (dart:io)"
+
+# curl_cffi: какой браузер TLS/HTTP2-фингерпринт имитировать для VK ID флоу.
+# ДОЛЖЕН соответствовать версии Chrome из UA_BROWSER выше — несовпадение
+# User-Agent и JA3-фингерпринта само по себе детектируется антибот-системами.
+VK_IMPERSONATE = "chrome131"
 
 # Способы подтверждения (из трафика: supported_ways поле)
 SUPPORTED_WAYS = (
@@ -261,7 +267,7 @@ def _solve_vk_captcha_rucaptcha(
 
 
 def _solve_not_robot_captcha(
-    s: httpx.Client,
+    s,  # curl_cffi.requests.Session (VK ID флоу) — параметр не используется внутри
     redirect_uri: str,
     api_key: str,
     log: list,
@@ -312,7 +318,7 @@ def _extract_code_from_url(url: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _vk_id_login(
-    s: httpx.Client,
+    s,  # curl_cffi.requests.Session с impersonate=VK_IMPERSONATE
     login: str,
     password: str,
     log: list,
@@ -350,7 +356,7 @@ def _vk_id_login(
             r_auth = s.get(
                 "https://id.vk.ru/auth",
                 params=auth_page_params,
-                follow_redirects=True,
+                allow_redirects=True,
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
@@ -741,19 +747,26 @@ def get_vk_auth_code(
     log: list[str] = []
 
     try:
+        # ВАЖНО: httpx даёт TLS/HTTP2 ClientHello, который легко отличим от
+        # настоящего браузера (JA3-фингерпринт). VK's антибот на connect_authorize
+        # банит такие сессии password_bruteforce ещё до проверки пароля — даже
+        # на первой попытке со свежего аккаунта. curl_cffi с impersonate=chrome
+        # шлёт тот же TLS ClientHello + HTTP2-фреймы, что и настоящий Chrome,
+        # так что сессия на сетевом уровне неотличима от входа руками.
         client_kw: dict = {
-            "follow_redirects": False,
+            "allow_redirects": False,
             "timeout": 30,
             "headers": {
                 "User-Agent": UA_BROWSER,
                 "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
             },
             "verify": False,  # Прокси часто обрывают TLS (SSL EOF)
+            "impersonate": VK_IMPERSONATE,
         }
         if proxy:
             client_kw["proxy"] = proxy
 
-        with httpx.Client(**client_kw) as s:
+        with cffi_requests.Session(**client_kw) as s:
             # Phase 1: VK ID login
             vk_result = _vk_id_login(s, login, password, log, rucaptcha_key, proxy=proxy)
             if not vk_result.get("ok"):
