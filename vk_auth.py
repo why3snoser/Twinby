@@ -353,19 +353,25 @@ def _vk_id_login(
                         f"&v=1.3.0&sdk_type=vkid&app_id={VK_ID_APP_ID}",
     }
 
-    try:
-        r_auth = s.get(
-            "https://id.vk.ru/auth",
-            params=auth_page_params,
-            follow_redirects=True,
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-            },
-        )
-        log.append(f"  → {r_auth.status_code}, len={len(r_auth.text)}")
-    except Exception as e:
-        return {"ok": False, "error": f"GET id.vk.ru/auth failed: {e}"}
+    r_auth = None
+    for _try in range(3):
+        try:
+            r_auth = s.get(
+                "https://id.vk.ru/auth",
+                params=auth_page_params,
+                follow_redirects=True,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+                },
+            )
+            log.append(f"  → {r_auth.status_code}, len={len(r_auth.text)}")
+            break
+        except Exception as e:
+            log.append(f"  GET attempt {_try + 1} failed: {e}")
+            if _try == 2:
+                return {"ok": False, "error": f"GET id.vk.ru/auth failed after 3 attempts: {e}"}
+            time.sleep(1)
 
     # Извлечь auth_token и anonymous_token из HTML
     auth_token = ""
@@ -704,6 +710,7 @@ def get_vk_auth_code(
                 "User-Agent": UA_BROWSER,
                 "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
             },
+            "verify": False,  # Прокси часто обрывают TLS (SSL EOF)
         }
         if proxy:
             client_kw["proxy"] = proxy
