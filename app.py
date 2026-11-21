@@ -959,6 +959,42 @@ PAGE_SWIPE = """
   </div>
   {% endif %}
 
+  <fieldset><legend>Фильтр поиска</legend>
+    <p class="hint">Фильтр + геолокация отправляются через API. Координаты задают точку поиска (не по IP).</p>
+    <div class="row">
+      <div>
+        <label class="l">Радиус, км</label>
+        <input type="number" name="distance" value="{{ f.distance or 100 }}" min="1" max="300" style="max-width:120px">
+      </div>
+      <div>
+        <label class="l">Возраст от</label>
+        <input type="number" name="min_age" value="{{ f.min_age or 18 }}" min="18" max="80" style="max-width:100px">
+      </div>
+      <div>
+        <label class="l">до</label>
+        <input type="number" name="max_age" value="{{ f.max_age or 35 }}" min="18" max="80" style="max-width:100px">
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div>
+        <label class="l">Широта (lat)</label>
+        <input type="text" name="latitude" value="{{ f.latitude or '59.9386' }}" placeholder="59.9386" style="max-width:150px">
+      </div>
+      <div>
+        <label class="l">Долгота (lon)</label>
+        <input type="text" name="longitude" value="{{ f.longitude or '30.3141' }}" placeholder="30.3141" style="max-width:150px">
+      </div>
+    </div>
+    <p class="hint" style="margin-top:4px">Питер: 59.9386, 30.3141 · Москва: 55.7558, 37.6173</p>
+    <label class="l">Пол</label>
+    <div class="chips">
+      <label class="chip"><input type="radio" name="filter_gender" value="f" {{ 'checked' if f.filter_gender=='f' }}><span>Девушки</span></label>
+      <label class="chip"><input type="radio" name="filter_gender" value="m" {{ 'checked' if f.filter_gender=='m' }}><span>Парни</span></label>
+      <label class="chip"><input type="radio" name="filter_gender" value="n" {{ 'checked' if f.filter_gender=='n' or not f.filter_gender }}><span>Все</span></label>
+    </div>
+    <button class="go alt" type="submit" name="mode" value="set_filter" style="margin-top:12px">Применить фильтр</button>
+  </fieldset>
+
   <fieldset><legend>Лайк / дизлайк по ID</legend>
     <label class="l">ID анкеты</label>
     <input type="text" name="action_user_id" value="{{ f.action_user_id }}" inputmode="numeric" placeholder="ID пользователя">
@@ -968,14 +1004,12 @@ PAGE_SWIPE = """
     </div>
   </fieldset>
 
-  <fieldset><legend>Автосвайп (лента)</legend>
-    <p class="hint">Загружает анкеты из ленты поиска и позволяет лайкать/дизлайкать по очереди.
-      Результаты выводятся в консоль ниже.</p>
-    <label class="l">Количество анкет для загрузки</label>
-    <input type="number" name="fetch_count" value="{{ f.fetch_count or 10 }}" min="1" max="100" style="max-width:120px">
+  <fieldset><legend>Автолайк</legend>
+    <p class="hint">Загружает анкеты из ленты и лайкает подряд, пока не кончатся анкеты или сервер не вернёт ошибку (лимит лайков).
+      Пауза между лайками: 0.5–1.5 сек (рандом). Все действия пишутся в консоль и серверные логи.</p>
     <div class="actions-row">
-      <button class="go" type="submit" name="mode" value="fetch_feed">Загрузить ленту</button>
-      <button class="go alt" type="submit" name="mode" value="like_all">&#128077; Лайкнуть все загруженные</button>
+      <button class="go" type="submit" name="mode" value="fetch_feed">Загрузить ленту (посмотреть)</button>
+      <button class="go" type="submit" name="mode" value="auto_like" style="background:#e90;color:#000">&#9889; Автолайк до лимита</button>
     </div>
   </fieldset>
 </form>
@@ -998,6 +1032,14 @@ PAGE_SWIPE = """
 </div>
 {% endfor %}
 {% endif %}
+
+{% if stats %}
+<div style="margin-top:20px;padding:14px;background:#1a1a1a;border:1px solid #333;border-radius:8px">
+  <b style="color:#3a7">Результат автолайка:</b> {{ stats.liked }} лайков
+  {% if stats.errors %}, {{ stats.errors }} ошибок{% endif %}
+  {% if stats.stopped_reason %}<br><span class="hint">Остановка: {{ stats.stopped_reason }}</span>{% endif %}
+</div>
+{% endif %}
 """
 
 DEFAULTS = dict(token="", profile_only=False, name="", birthday="", gender="m",
@@ -1005,7 +1047,9 @@ DEFAULTS = dict(token="", profile_only=False, name="", birthday="", gender="m",
                 about="", height="", city_id="", city_name="", religion_id="",
                 education="", children="", alcohol="", smoking="",
                 language=[], interest=[], zodiac=True, zodiac_touch=False, dry_run=False,
-                action_user_id="", fetch_count=10)
+                action_user_id="", fetch_count=10,
+                distance=100, min_age=18, max_age=35, filter_gender="f",
+                latitude="59.9386", longitude="30.3141")
 
 
 def resolve_by_ids(wanted: list[str], items: list[dict], what: str) -> list[dict]:
@@ -1401,106 +1445,151 @@ def accounts_page():
 
 # ---- Вкладка: Свайпы ----
 @app.route("/swipe", methods=["GET", "POST"])
+def _parse_feed(result) -> list[dict]:
+    """Парсит ответ /api/dating/search/ в унифицированный список."""
+    items = []
+    if isinstance(result, list):
+        raw = result
+    elif isinstance(result, dict):
+        raw = result.get("results", result.get("data", []))
+        if not isinstance(raw, list):
+            raw = []
+    else:
+        raw = []
+    for item in raw:
+        u = item if isinstance(item, dict) else {}
+        uid = str(u.get("id", u.get("userId", "")))
+        if not uid:
+            continue
+        name = u.get("name", "")
+        age = u.get("age", "")
+        city = u.get("nameCity", u.get("city", ""))
+        photos = u.get("photos", [])
+        photo_url = ""
+        if photos and isinstance(photos, list) and isinstance(photos[0], dict):
+            photo_url = photos[0].get("url", photos[0].get("src", ""))
+        items.append({"id": uid, "name": name, "age": age, "city": city, "photo": photo_url})
+    return items
+
+
 def swipe_page():
+    import random
     f = dict(DEFAULTS)
     log_buf = io.StringIO()
     tee = lambda msg: log_buf.write(msg + "\n")
     feed = []
+    stats = None
 
     if request.method == "POST":
         f["token"] = request.form.get("token", "").strip().strip('"\'')
         f["action_user_id"] = request.form.get("action_user_id", "").strip()
-        f["fetch_count"] = request.form.get("fetch_count", "10").strip()
+        f["distance"] = request.form.get("distance", "100").strip()
+        f["min_age"] = request.form.get("min_age", "18").strip()
+        f["max_age"] = request.form.get("max_age", "35").strip()
+        f["filter_gender"] = request.form.get("filter_gender", "f").strip()
+        f["latitude"] = request.form.get("latitude", "59.9386").strip()
+        f["longitude"] = request.form.get("longitude", "30.3141").strip()
         mode = request.form.get("mode", "")
 
         try:
             c = _make_web_client(f["token"], False, tee)
 
-            if mode in ("like", "dislike"):
+            if mode == "set_filter":
+                # 1) Обновляем геолокацию профиля
+                lat = float(f["latitude"])
+                lon = float(f["longitude"])
+                tee(f"Обновляю геолокацию: lat={lat}, lon={lon}")
+                c.call("PATCH", tw.API["me"], json={"latitude": lat, "longitude": lon})
+
+                # 2) Обновляем фильтр поиска
+                filter_body = {
+                    "minAges": int(f["min_age"]),
+                    "maxAges": int(f["max_age"]),
+                    "distance": int(f["distance"]),
+                    "gender": f["filter_gender"],
+                }
+                tee(f"Обновляю фильтр: {json.dumps(filter_body)}")
+                c.call("PATCH", tw.API["filter"], json=filter_body)
+                tee("Фильтр и геолокация обновлены")
+
+            elif mode in ("like", "dislike"):
                 uid = f["action_user_id"]
                 action_type = 0 if mode == "like" else 1
                 label = "LIKE" if action_type == 0 else "DISLIKE"
-
-                # Попробуем получить имя пользователя
-                user_info = ""
-                try:
-                    udata = c.call("GET", f"/api/users/{uid}/")
-                    if isinstance(udata, dict):
-                        user_info = f" ({udata.get('name', '?')}, {udata.get('age', '?')})"
-                except Exception:
-                    pass
-
                 send_dating_action(c, uid, action_type, tee)
-                # Лог в серверную консоль
-                print(f"[SWIPE] {label} user={uid}{user_info}")
+                print(f"[SWIPE] {label} user={uid}")
 
             elif mode == "fetch_feed":
-                count = min(int(f["fetch_count"] or 10), 100)
-                tee(f"Загружаю ленту ({count} анкет)...")
-                try:
-                    result = c.call("GET", DATING_SEARCH_PATH)
-                    if isinstance(result, list):
-                        for item in result[:count]:
-                            u = item if isinstance(item, dict) else {}
-                            uid = str(u.get("id", u.get("userId", "")))
-                            name = u.get("name", "")
-                            age = u.get("age", "")
-                            city = u.get("nameCity", u.get("city", ""))
-                            photos = u.get("photos", [])
-                            photo_url = ""
-                            if photos and isinstance(photos, list) and isinstance(photos[0], dict):
-                                photo_url = photos[0].get("url", photos[0].get("src", ""))
-                            feed.append({"id": uid, "name": name, "age": age, "city": city, "photo": photo_url})
-                            tee(f"  {name}, {age} — id={uid}" + (f", {city}" if city else ""))
-                        tee(f"Загружено {len(feed)} анкет")
-                        print(f"[FEED] Loaded {len(feed)} profiles")
-                    elif isinstance(result, dict) and "results" in result:
-                        for item in result["results"][:count]:
-                            u = item if isinstance(item, dict) else {}
-                            uid = str(u.get("id", u.get("userId", "")))
-                            name = u.get("name", "")
-                            age = u.get("age", "")
-                            city = u.get("nameCity", u.get("city", ""))
-                            photos = u.get("photos", [])
-                            photo_url = ""
-                            if photos and isinstance(photos, list) and isinstance(photos[0], dict):
-                                photo_url = photos[0].get("url", photos[0].get("src", ""))
-                            feed.append({"id": uid, "name": name, "age": age, "city": city, "photo": photo_url})
-                            tee(f"  {name}, {age} — id={uid}" + (f", {city}" if city else ""))
-                        tee(f"Загружено {len(feed)} анкет")
-                        print(f"[FEED] Loaded {len(feed)} profiles")
-                    else:
-                        tee(f"Формат ответа ленты неизвестен: {json.dumps(result, ensure_ascii=False)[:500]}")
-                except Exception as e:
-                    tee(f"Ошибка загрузки ленты: {e}")
+                tee("Загружаю ленту...")
+                result = c.call("GET", DATING_SEARCH_PATH)
+                feed = _parse_feed(result)
+                for u in feed:
+                    tee(f"  {u['name']}, {u['age']} — id={u['id']}" + (f", {u['city']}" if u['city'] else ""))
+                tee(f"Загружено {len(feed)} анкет")
+                if not feed:
+                    tee(f"Сырой ответ: {json.dumps(result, ensure_ascii=False)[:600]}")
+                print(f"[FEED] Loaded {len(feed)} profiles")
 
-            elif mode == "like_all":
-                tee("Лайкаю все загруженные анкеты...")
-                # Нужен повторный fetch, т.к. feed не сохраняется между запросами
-                try:
-                    count = min(int(f["fetch_count"] or 10), 100)
-                    result = c.call("GET", DATING_SEARCH_PATH)
-                    items = result if isinstance(result, list) else result.get("results", []) if isinstance(result, dict) else []
-                    liked = 0
-                    for item in items[:count]:
-                        u = item if isinstance(item, dict) else {}
-                        uid = str(u.get("id", u.get("userId", "")))
-                        name = u.get("name", "?")
-                        age = u.get("age", "?")
-                        if uid:
-                            send_dating_action(c, uid, 0, tee)
-                            print(f"[SWIPE] LIKE user={uid} ({name}, {age})")
+            elif mode == "auto_like":
+                tee("Автолайк: загружаю ленту и лайкаю подряд до лимита...")
+                liked = 0
+                errors = 0
+                stopped_reason = ""
+                rounds = 0
+                max_rounds = 50  # максимум 50 подгрузок ленты
+
+                while rounds < max_rounds:
+                    rounds += 1
+                    try:
+                        result = c.call("GET", DATING_SEARCH_PATH)
+                    except RuntimeError as e:
+                        stopped_reason = f"Ошибка загрузки ленты: {e}"
+                        tee(stopped_reason)
+                        break
+
+                    batch = _parse_feed(result)
+                    if not batch:
+                        stopped_reason = "Лента пуста — анкеты закончились или достигнут лимит"
+                        tee(stopped_reason)
+                        break
+
+                    tee(f"Раунд {rounds}: загружено {len(batch)} анкет")
+
+                    for u in batch:
+                        uid = u["id"]
+                        try:
+                            c.call("POST", DATING_ACTION_PATH, json={"user": uid, "type": 0})
                             liked += 1
-                            time.sleep(0.3)  # не спамим сервер
-                    tee(f"Лайкнуто {liked} анкет")
-                except Exception as e:
-                    tee(f"Ошибка: {e}")
+                            tee(f"  LIKE #{liked}: {u['name']}, {u['age']} (id={uid})")
+                            print(f"[SWIPE] LIKE #{liked} user={uid} ({u['name']}, {u['age']})")
+                        except RuntimeError as e:
+                            err_str = str(e)
+                            errors += 1
+                            tee(f"  FAIL: {u['name']} (id={uid}): {err_str[:200]}")
+                            # Если 429 или похожее на лимит — останавливаемся
+                            if "429" in err_str or "limit" in err_str.lower() or "too many" in err_str.lower():
+                                stopped_reason = f"Лимит лайков достигнут ({err_str[:100]})"
+                                tee(stopped_reason)
+                                break
+                            if errors >= 5:
+                                stopped_reason = f"Слишком много ошибок подряд ({errors})"
+                                tee(stopped_reason)
+                                break
+
+                        # Рандомная пауза 0.5–1.5 сек
+                        time.sleep(random.uniform(0.5, 1.5))
+
+                    if stopped_reason:
+                        break
+
+                tee(f"Итого: {liked} лайков, {errors} ошибок, {rounds} раундов")
+                stats = {"liked": liked, "errors": errors, "stopped_reason": stopped_reason}
 
         except Exception as e:
             tee(f"ERROR: {e}")
             tee(traceback.format_exc(limit=3))
 
-    return _render(PAGE_SWIPE, "swipe", log_buf, feed=feed, f=f)
+    return _render(PAGE_SWIPE, "swipe", log_buf, feed=feed, f=f, stats=stats)
 
 
 # ---- Вкладка: Онбординг (главная) ----
