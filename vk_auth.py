@@ -632,9 +632,14 @@ def _vk_id_login(
     resp_type = d_authorize.get("type", "")
     if resp_type == "error":
         err_info = d_authorize.get("error_info", {})
-        err_name = err_info.get("error", d_authorize.get("error", ""))
-        err_desc = err_info.get("error_description", "")
-        full_err = f"{err_name}: {err_desc}" if err_desc else str(err_name)
+        err_code = d_authorize.get("error_code", "")
+        if isinstance(err_info, dict):
+            err_name = err_info.get("error", err_code)
+            err_desc = err_info.get("error_description", "")
+            full_err = f"{err_name}: {err_desc}" if err_desc else str(err_name)
+        else:
+            # error_info — строка с описанием ошибки
+            full_err = f"{err_code}: {err_info}" if err_code else str(err_info)
         log.append(f"  connect_authorize error: {full_err}")
         log.append(f"  Response: {json.dumps(d_authorize, ensure_ascii=False)[:300]}")
 
@@ -646,13 +651,13 @@ def _vk_id_login(
         if d_authorize.get("is_user_banned"):
             return {"ok": False, "error": "Account banned"}
 
-        # Wrong password
-        if "password" in str(err_name).lower() or "credentials" in str(err_name).lower():
-            return {"ok": False, "error": f"Wrong password: {full_err}"}
-
-        # Flood
+        # Flood / bruteforce (проверять ДО wrong password, т.к. password_bruteforce содержит "password")
         if "flood" in str(d_authorize).lower() or "bruteforce" in str(d_authorize).lower():
             return {"ok": False, "error": f"VK flood control: {full_err}"}
+
+        # Wrong password
+        if "password" in str(err_code).lower() or "credentials" in str(err_code).lower():
+            return {"ok": False, "error": f"Wrong password: {full_err}"}
 
         return {"ok": False, "error": f"VK login failed: {full_err}"}
 
