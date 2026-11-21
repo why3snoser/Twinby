@@ -256,6 +256,13 @@ legend{padding:0 6px;font-size:13px;color:var(--accent);font-weight:600}
     <div style="padding-top:18px"><button class="primary" onclick="createPreset()">+ Пресет</button></div>
   </div>
 
+  <div class="flex mb" style="gap:8px;justify-content:flex-end">
+    <button class="small" onclick="exportData()">⬇ Экспорт данных</button>
+    <label class="file-btn" style="padding:3px 10px;font-size:12px">⬆ Импорт
+      <input type="file" accept=".json" onchange="importData(this)">
+    </label>
+  </div>
+
   <div id="presetsList"></div>
   <div id="presetDetail" class="hidden"></div>
   <div id="presetLog" class="log hidden mt"></div>
@@ -577,6 +584,7 @@ function renderPresetDetail() {
   let html = `<fieldset><legend>${esc(OPEN_PRESET)} (нужно: ${p.count||'?'})</legend>`;
   html += `<div class="flex flex-wrap mb" style="gap:8px">
     <button class="primary" onclick="registerPreset('${esc(OPEN_PRESET)}')">Зарегистрировать</button>
+    <button onclick="recoverPreset('${esc(OPEN_PRESET)}')">♻ Восстановить</button>
     <button onclick="autoLikePreset('${esc(OPEN_PRESET)}')">Автолайк</button>
     <button onclick="checkStatusPreset('${esc(OPEN_PRESET)}')">Обновить статусы</button>
   </div>`;
@@ -789,6 +797,61 @@ async function checkStatusPreset(presetName) {
   logMsg('=== Готово ===');
 }
 
+/* ===================== RECOVER ===================== */
+async function recoverPreset(presetName) {
+  const p = PRESETS[presetName];
+  if (!p) return;
+  const count = p.count || 5;
+  const existing = (p.accounts||[]).length;
+  const need = count - existing;
+  if (need <= 0) { logMsg('У пресета уже достаточно аккаунтов'); return; }
+
+  const freeVk = getFreeVk(need);
+  if (!freeVk.length) { alert('Нет свободных VK аккаунтов'); return; }
+
+  showLog();
+  logMsg(`=== Восстановление "${presetName}": ${freeVk.length} аккаунтов ===`);
+
+  for (let i = 0; i < freeVk.length; i++) {
+    const vk = freeVk[i];
+    logMsg(`[${i+1}/${freeVk.length}] VK ${vk.id}...`);
+    try {
+      const resp = await fetch('/api/recover-account', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({vk_token: vk.token})
+      });
+      const d = await resp.json();
+      if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
+
+      // Find closest city name
+      let cityName = d.city_name || '';
+      if (!cityName && d.latitude && CITIES.length) {
+        let best = null, bestDist = Infinity;
+        for (const c of CITIES) {
+          const dist = Math.hypot(c.lat - d.latitude, c.lon - d.longitude);
+          if (dist < bestDist) { bestDist = dist; best = c; }
+        }
+        if (best) cityName = best.name;
+      }
+
+      const accObj = {
+        jwt: d.jwt, user_id: d.user_id, name: d.name||'',
+        vk_id: vk.id, vk_pass: vk.pass, vk_token: vk.token,
+        city: cityName, latitude: d.latitude, longitude: d.longitude,
+        verified: d.verified, premium: d.premium,
+        premium_expire: d.premium_expire, likes_done: 0
+      };
+
+      if (!p.accounts) p.accounts = [];
+      p.accounts.push(accObj);
+      savePresetsServer(()=>renderPresetDetail());
+      const status = [d.verified?'✓':'⚠️', d.premium?'💎':''].filter(Boolean).join(' ');
+      logMsg(`  Восстановлен: ${d.name||'?'} (${cityName||'?'}) ${status}`);
+    } catch(e) { logMsg(`  ОШИБКА: ${e}`); }
+  }
+  logMsg('=== Восстановление завершено ===');
+}
+
 /* ===================== ACCOUNTS TAB ===================== */
 function renderAccounts(skipRebuild) {
   if (!skipRebuild) rebuildAll();
@@ -876,6 +939,47 @@ function logMsg(msg) {
 
 /* ===================== UTILS ===================== */
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+function exportData() {
+  const blob = new Blob([JSON.stringify({presets:PRESETS, settings:SETTINGS}, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'twinby-backup-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+}
+
+function importData(input) {
+  const f = input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = async e => {
+    try {
+      const d = JSON.parse(e.target.result);
+      if (d.presets) {
+        // Merge: existing accounts stay, imported ones added
+        for (const [name, p] of Object.entries(d.presets)) {
+          if (!PRESETS[name]) PRESETS[name] = p;
+          else {
+            const existing = new Set((PRESETS[name].accounts||[]).map(a=>a.user_id));
+            for (const a of (p.accounts||[])) {
+              if (!existing.has(a.user_id)) { PRESETS[name].accounts.push(a); existing.add(a.user_id); }
+            }
+          }
+        }
+        savePresetsServer(()=>{ renderPresets(); if(OPEN_PRESET) renderPresetDetail(); });
+        logMsg('Импорт: пресеты загружены');
+      }
+      if (d.settings) {
+        SETTINGS = {...SETTINGS, ...d.settings};
+        fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(SETTINGS)});
+        applySettings();
+      }
+      alert('Импорт завершён');
+    } catch(err) { alert('Ошибка: '+err); }
+  };
+  reader.readAsText(f);
+  input.value = '';
+}
 
 async function testRucaptcha() {
   const key = document.getElementById('sRucaptchaKey').value.trim();

@@ -2802,6 +2802,75 @@ def api_check_status():
         return jsonify({"ok": False, "error": str(e)})
 
 
+@app.route("/api/recover-account", methods=["POST"])
+def api_recover_account():
+    """Восстановление: VK token → JWT → /api/users/me/ → данные аккаунта."""
+    import httpx
+    data = request.get_json(force=True)
+    vk_token = (data.get("vk_token") or "").strip()
+    if not vk_token:
+        return jsonify({"ok": False, "error": "Нет VK токена"})
+
+    try:
+        # Auth via VK token
+        resp = httpx.post(
+            f"{tw.BASE}{AUTH_VK_PATH}",
+            json={"provider": "vk", "token": vk_token},
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"ok": False, "error": f"Auth: {resp.status_code} {resp.text[:300]}"})
+        rd = resp.json()
+        jwt_token = rd.get("accessToken", "")
+        if not jwt_token:
+            return jsonify({"ok": False, "error": "Нет accessToken"})
+
+        # Get account info
+        me_resp = httpx.get(
+            f"{tw.BASE}{tw.API['me']}",
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Authorization": f"JWT {jwt_token}"},
+            timeout=15,
+        )
+        me = me_resp.json() if me_resp.status_code < 400 else {}
+
+        verified = me.get("verified", False)
+        premium_expire = me.get("premiumExpire")
+        premium = premium_expire is not None and premium_expire != ""
+        name = me.get("name", "")
+        user_id = str(me.get("id", ""))
+
+        # Try to extract city from location
+        city_name = ""
+        location = me.get("location", "")
+        # location is "POINT(lat lon)" — try to match to known city
+        if location and "POINT" in str(location):
+            try:
+                coords = str(location).replace("POINT(", "").replace(")", "").split()
+                lat, lon = float(coords[0]), float(coords[1])
+            except Exception:
+                lat, lon = 0, 0
+        else:
+            lat, lon = 0, 0
+
+        return jsonify({
+            "ok": True,
+            "jwt": jwt_token,
+            "user_id": user_id,
+            "name": name,
+            "verified": verified,
+            "premium": premium,
+            "premium_expire": premium_expire,
+            "latitude": lat,
+            "longitude": lon,
+            "city_name": city_name,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 @app.route("/api/rucaptcha-balance", methods=["POST"])
 def api_rucaptcha_balance():
     """Проверка баланса RuCaptcha. JSON: {key}."""
