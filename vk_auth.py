@@ -505,8 +505,12 @@ def _vk_id_login(
         "login": login,
         "client_id": VK_ID_APP_ID,
         "device_id": device_id,
+        "sid": "",
+        "super_app_token": "",
+        "service_group": "",
         "supported_ways": SUPPORTED_WAYS,
         "auth_token": auth_token,
+        "is_edu_flow": "0",
         "anonymous_token": anonymous_token,
     }
 
@@ -583,19 +587,31 @@ def _vk_id_login(
     # ═══════════════════════════════════════════════════════════════════════
     log.append("[4] POST login.vk.ru/?act=connect_authorize")
 
+    # Формат из реального трафика (mitmproxy)
+    to_url = "https://id.vk.ru/account?flow_service=vkid_landing_/id"
+    to_b64 = base64.urlsafe_b64encode(to_url.encode()).decode().rstrip("=")
+
     authorize_data = {
         "username": login,
         "password": password,
         "auth_token": auth_token,
-        "anonymous_token": anonymous_token,
         "sid": sid,
         "uuid": my_uuid,
         "v": VK_API_VERSION,
         "device_id": device_id,
-        "oauth_response_type": "silent_token",
-        "app_id": VK_ID_APP_ID,
-        "version": "1",
+        "service_group": "",
+        "agreement_hash": "",
+        "oauth_version": "",
+        "max_messenger_hash": "",
+        "oauth_force_hash": "0",
         "is_registration": "0",
+        "oauth_response_type": "silent_token",
+        "vkid_oauth_hash": "",
+        "is_oauth_migrated_flow": "0",
+        "oauth_state": "",
+        "to": to_b64,
+        "version": "1",
+        "app_id": VK_ID_APP_ID,
     }
 
     r_authorize = None
