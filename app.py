@@ -2651,27 +2651,35 @@ def api_register_account():
             except Exception:
                 pass
 
-            try: c.call("POST", tw.API["agreement"])
-            except Exception: pass
-            c.call("PATCH", tw.API["me"], json={"name": name, "language": "RU"})
-            c.call("PATCH", tw.API["me"], json={"birthday": birthday_iso})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 1})
-            c.call("PATCH", tw.API["filter"], json=tw.FILTER_DEFAULT)
-            c.call("PATCH", tw.API["me"], json={"gender": gender})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 2})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 3})
+            def safe_call(desc, method, path, **kw):
+                try:
+                    r = c.call(method, path, **kw)
+                    tee(f"  OK: {desc}")
+                    return r
+                except Exception as ex:
+                    tee(f"  WARN: {desc} -> {ex}")
+                    return None
 
-            # target + interview: получаем первые из списка
+            safe_call("agreement", "POST", tw.API["agreement"])
+            safe_call("name", "PATCH", tw.API["me"], json={"name": name, "language": "RU"})
+            safe_call("birthday", "PATCH", tw.API["me"], json={"birthday": birthday_iso})
+            safe_call("onboardingStep=1", "PATCH", tw.API["me"], json={"onboardingStep": 1})
+            safe_call("filter_default", "PATCH", tw.API["filter"], json=tw.FILTER_DEFAULT)
+            safe_call("gender", "PATCH", tw.API["me"], json={"gender": gender})
+            safe_call("onboardingStep=2", "PATCH", tw.API["me"], json={"onboardingStep": 2})
+            safe_call("onboardingStep=3", "PATCH", tw.API["me"], json={"onboardingStep": 3})
+
+            # target + interview
             try:
                 targets = c.call("GET", tw.API["targets"])
                 if isinstance(targets, list) and targets:
-                    c.call("PATCH", tw.API["me"], json={"targetId": targets[0].get("id", "")})
+                    safe_call("targetId", "PATCH", tw.API["me"], json={"targetId": targets[0].get("id", "")})
             except Exception:
-                pass
+                tee("  WARN: targets fetch failed")
 
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 4})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 5})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 6})
+            safe_call("onboardingStep=4", "PATCH", tw.API["me"], json={"onboardingStep": 4})
+            safe_call("onboardingStep=5", "PATCH", tw.API["me"], json={"onboardingStep": 5})
+            safe_call("onboardingStep=6", "PATCH", tw.API["me"], json={"onboardingStep": 6})
 
             try:
                 interviews = c.call("GET", tw.API["interviews"])
@@ -2679,12 +2687,12 @@ def api_register_account():
                     iid = interviews[0].get("id", "")
                     qs = c.call("GET", tw.API["questions"].format(iid=iid))
                     if isinstance(qs, list) and qs:
-                        c.call("POST", tw.API["answers"],
+                        safe_call("answers", "POST", tw.API["answers"],
                                json={"test": [{"question": q["id"], "answer": 4} for q in qs]})
             except Exception:
-                pass
+                tee("  WARN: interviews failed")
 
-            c.call("PATCH", tw.API["me"], json={"onboardingCompleted": True})
+            safe_call("onboardingCompleted", "PATCH", tw.API["me"], json={"onboardingCompleted": True})
 
         # 3) Профиль
         profile_body = {}
@@ -2728,9 +2736,9 @@ def api_register_account():
         except Exception:
             pass
 
-        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name})
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name, "log": log_buf.getvalue()})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        return jsonify({"ok": False, "error": str(e), "log": log_buf.getvalue() if 'log_buf' in dir() else ""})
 
 
 @app.route("/api/verify-video", methods=["POST"])

@@ -675,6 +675,7 @@ async function registerPreset(presetName) {
         })
       });
       const d = await resp.json();
+      if (d.log) logMsg(d.log.trim());
       if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
       logMsg(`  JWT получен (${d.user_id})`);
 
