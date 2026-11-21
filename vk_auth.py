@@ -135,163 +135,138 @@ def _solve_captcha_image(captcha_img_url: str, api_key: str,
 
 
 # ---------------------------------------------------------------------------
-# VK "not_robot_captcha" solver через RuCaptcha funcaptcha/custom
+# VK captcha solver через RuCaptcha (метод vkcaptcha)
 # ---------------------------------------------------------------------------
+
+def _solve_vk_captcha_rucaptcha(
+    redirect_uri: str,
+    api_key: str,
+    proxy: str,
+    log: list,
+) -> Optional[str]:
+    """
+    Решить VK captcha через RuCaptcha API (метод vkcaptcha).
+    redirect_uri — из ответа validateAccount (error_code 14).
+
+    RuCaptcha сам открывает страницу капчи, решает её и возвращает token.
+    Возвращает success_token или None.
+    """
+    if not api_key:
+        log.append("  [captcha] No RuCaptcha key")
+        return None
+
+    log.append(f"  [captcha] Sending to RuCaptcha (vkcaptcha method)...")
+    log.append(f"  [captcha] redirect_uri: {redirect_uri[:100]}...")
+
+    # Подготовить данные для RuCaptcha in.php
+    in_data = {
+        "key": api_key,
+        "method": "vkcaptcha",
+        "redirect_uri": redirect_uri,
+        "userAgent": UA_BROWSER,
+        "json": "1",
+    }
+
+    # Добавить прокси если есть
+    if proxy:
+        # RuCaptcha ожидает proxy в формате login:password@ip:port
+        # и proxytype отдельно
+        parsed_proxy = urllib.parse.urlparse(proxy)
+        proxy_type = parsed_proxy.scheme.upper() if parsed_proxy.scheme else "HTTP"
+        if proxy_type not in ("HTTP", "HTTPS", "SOCKS4", "SOCKS5"):
+            proxy_type = "HTTP"
+
+        proxy_host = parsed_proxy.hostname or ""
+        proxy_port = parsed_proxy.port or ""
+        proxy_login = parsed_proxy.username or ""
+        proxy_pass = parsed_proxy.password or ""
+
+        if proxy_host:
+            proxy_str = f"{proxy_host}:{proxy_port}"
+            if proxy_login:
+                proxy_str = f"{proxy_login}:{proxy_pass}@{proxy_str}"
+            in_data["proxy"] = proxy_str
+            in_data["proxytype"] = proxy_type
+
+    try:
+        r1 = httpx.post(
+            "https://rucaptcha.com/in.php",
+            data=in_data,
+            timeout=30,
+        )
+        d1 = r1.json()
+        log.append(f"  [captcha] in.php response: {json.dumps(d1, ensure_ascii=False)[:200]}")
+
+        if d1.get("status") != 1:
+            err_text = d1.get("request", d1.get("error_text", "unknown"))
+            log.append(f"  [captcha] in.php error: {err_text}")
+            return None
+
+        task_id = d1["request"]
+        log.append(f"  [captcha] task_id: {task_id}")
+    except Exception as e:
+        log.append(f"  [captcha] in.php failed: {e}")
+        return None
+
+    # Ждать решения (до 120 секунд)
+    for i in range(24):
+        time.sleep(5)
+        try:
+            r2 = httpx.get(
+                "https://rucaptcha.com/res.php",
+                params={
+                    "key": api_key,
+                    "action": "get",
+                    "id": task_id,
+                    "json": "1",
+                },
+                timeout=10,
+            )
+            d2 = r2.json()
+
+            if d2.get("status") == 1:
+                token = d2.get("request", "")
+                log.append(f"  [captcha] Solved! token: {token[:40]}...")
+                return token
+
+            req = d2.get("request", "")
+            if req == "CAPCHA_NOT_READY":
+                if i % 4 == 3:
+                    log.append(f"  [captcha] Still solving... ({(i + 1) * 5}s)")
+                continue
+
+            # Ошибка
+            log.append(f"  [captcha] res.php error: {req}")
+            return None
+        except Exception as e:
+            log.append(f"  [captcha] res.php failed: {e}")
+
+    log.append("  [captcha] Timeout waiting for solution")
+    return None
+
 
 def _solve_not_robot_captcha(
     s: httpx.Client,
     redirect_uri: str,
     api_key: str,
     log: list,
+    proxy: str = "",
 ) -> Optional[str]:
     """
-    Обработка VK not_robot_captcha (checkbox/puzzle).
-    redirect_uri содержит session_token из ответа validateAccount.
-
+    Обработка VK not_robot_captcha.
+    Основной метод: отправить redirect_uri в RuCaptcha (vkcaptcha).
     Возвращает success_token или None.
     """
     if not api_key:
-        log.append("  [captcha] No RuCaptcha key, cannot solve not_robot_captcha")
+        log.append("  [captcha] No RuCaptcha key, cannot solve captcha")
         return None
 
-    # Извлечь session_token из redirect_uri
-    parsed = urllib.parse.urlparse(redirect_uri)
-    qs = urllib.parse.parse_qs(parsed.query)
-    session_token = qs.get("session_token", [""])[0]
-    if not session_token:
-        # Может быть во fragment
-        qs2 = urllib.parse.parse_qs(parsed.fragment)
-        session_token = qs2.get("session_token", [""])[0]
+    # Основной путь: RuCaptcha vkcaptcha метод
+    token = _solve_vk_captcha_rucaptcha(redirect_uri, api_key, proxy, log)
+    if token:
+        return token
 
-    if not session_token:
-        log.append("  [captcha] No session_token in redirect_uri")
-        return None
-
-    log.append(f"  [captcha] session_token: {session_token[:30]}...")
-
-    # Step 1: initSession
-    try:
-        r_init = s.post(
-            "https://api.vk.ru/method/captchaNotRobot.initSession",
-            params={"v": "5.131"},
-            data={"session_token": session_token},
-        )
-        d_init = r_init.json()
-        resp_init = d_init.get("response", {})
-        captcha_id = resp_init.get("captcha_id", "")
-        show_type = resp_init.get("show_captcha_type", "")
-        log.append(f"  [captcha] initSession: id={captcha_id}, type={show_type}")
-    except Exception as e:
-        log.append(f"  [captcha] initSession failed: {e}")
-        return None
-
-    if not captcha_id:
-        log.append("  [captcha] No captcha_id from initSession")
-        return None
-
-    # Если это checkbox — пробуем автоматически пройти
-    if show_type == "checkbox":
-        # Step 2: settings
-        try:
-            r_settings = s.post(
-                "https://api.vk.ru/method/captchaNotRobot.settings",
-                params={"v": "5.131"},
-                data={"captcha_id": captcha_id},
-            )
-            log.append(f"  [captcha] settings: {r_settings.status_code}")
-        except Exception as e:
-            log.append(f"  [captcha] settings failed: {e}")
-
-        # Step 3: componentDone (имитация клика на checkbox)
-        try:
-            r_done = s.post(
-                "https://api.vk.ru/method/captchaNotRobot.componentDone",
-                params={"v": "5.131"},
-                data={
-                    "captcha_id": captcha_id,
-                    "component": "checkbox",
-                },
-            )
-            d_done = r_done.json()
-            status = d_done.get("response", {}).get("status", "")
-            log.append(f"  [captcha] componentDone: status={status}")
-        except Exception as e:
-            log.append(f"  [captcha] componentDone failed: {e}")
-
-        # Step 4: check
-        try:
-            r_check = s.post(
-                "https://api.vk.ru/method/captchaNotRobot.check",
-                params={"v": "5.131"},
-                data={
-                    "captcha_id": captcha_id,
-                    # Минимальные sensor данные — VK может принять или отклонить
-                    "sensor_data": json.dumps({
-                        "mouse_events": [],
-                        "touch_events": [],
-                        "key_events": [],
-                        "timestamp": int(time.time() * 1000),
-                    }),
-                },
-            )
-            d_check = r_check.json()
-            resp_check = d_check.get("response", {})
-            success_token = resp_check.get("success_token", "")
-            if success_token:
-                log.append(f"  [captcha] check OK: {success_token[:30]}...")
-                # endSession
-                try:
-                    s.post(
-                        "https://api.vk.ru/method/captchaNotRobot.endSession",
-                        params={"v": "5.131"},
-                        data={"captcha_id": captcha_id},
-                    )
-                except Exception:
-                    pass
-                return success_token
-            else:
-                log.append(f"  [captcha] check failed: {json.dumps(d_check, ensure_ascii=False)[:200]}")
-        except Exception as e:
-            log.append(f"  [captcha] check failed: {e}")
-
-    # Если checkbox не прошёл или другой тип — fallback на RuCaptcha
-    # Отправляем как funcaptcha / custom task
-    log.append("  [captcha] Checkbox auto-solve failed, trying RuCaptcha for VK captcha...")
-
-    # Попробовать получить captcha image URL через GET redirect_uri
-    try:
-        r_page = s.get(redirect_uri, follow_redirects=True)
-        # Ищем img src для классической капчи
-        img_match = re.search(r'<img[^>]+src="([^"]*captcha[^"]*)"', r_page.text)
-        if img_match:
-            captcha_img = img_match.group(1)
-            if not captcha_img.startswith("http"):
-                captcha_img = "https://api.vk.ru" + captcha_img
-            log.append(f"  [captcha] Found image captcha: {captcha_img[:80]}")
-            solution = _solve_captcha_image(captcha_img, api_key)
-            if solution:
-                log.append(f"  [captcha] RuCaptcha solved: {solution}")
-                # Попробовать check с решением
-                try:
-                    r_check2 = s.post(
-                        "https://api.vk.ru/method/captchaNotRobot.check",
-                        params={"v": "5.131"},
-                        data={
-                            "captcha_id": captcha_id,
-                            "captcha_answer": solution,
-                        },
-                    )
-                    d_check2 = r_check2.json()
-                    st2 = d_check2.get("response", {}).get("success_token", "")
-                    if st2:
-                        log.append(f"  [captcha] RuCaptcha check OK: {st2[:30]}...")
-                        return st2
-                except Exception as e:
-                    log.append(f"  [captcha] RuCaptcha check failed: {e}")
-    except Exception as e:
-        log.append(f"  [captcha] GET captcha page failed: {e}")
-
-    log.append("  [captcha] Could not solve captcha")
+    log.append("  [captcha] Could not solve VK captcha")
     return None
 
 
@@ -327,6 +302,7 @@ def _vk_id_login(
     password: str,
     log: list,
     rucaptcha_key: str = "",
+    proxy: str = "",
 ) -> dict:
     """
     Полный VK ID login flow через id.vk.ru (app_id=7497650).
@@ -557,7 +533,7 @@ def _vk_id_login(
 
                 if redirect_uri and rucaptcha_key:
                     # VK not_robot_captcha flow
-                    success_token = _solve_not_robot_captcha(s, redirect_uri, rucaptcha_key, log)
+                    success_token = _solve_not_robot_captcha(s, redirect_uri, rucaptcha_key, log, proxy=proxy)
                     if success_token:
                         captcha_success_token = success_token
                         continue
@@ -717,7 +693,7 @@ def get_vk_auth_code(
 
         with httpx.Client(**client_kw) as s:
             # Phase 1: VK ID login
-            vk_result = _vk_id_login(s, login, password, log, rucaptcha_key)
+            vk_result = _vk_id_login(s, login, password, log, rucaptcha_key, proxy=proxy)
             if not vk_result.get("ok"):
                 return {**vk_result, "log": log}
 
