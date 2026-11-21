@@ -587,6 +587,8 @@ def _vk_id_login(
         "username": login,
         "password": password,
         "auth_token": auth_token,
+        "anonymous_token": anonymous_token,
+        "sid": sid,
         "uuid": my_uuid,
         "v": VK_API_VERSION,
         "device_id": device_id,
@@ -608,7 +610,13 @@ def _vk_id_login(
         )
         d_authorize = r_authorize.json()
     except Exception as e:
+        log.append(f"  connect_authorize raw response ({r_authorize.status_code}): {r_authorize.text[:300]}")
         return {"ok": False, "error": f"connect_authorize failed: {e}"}
+
+    # VK иногда возвращает JSON-строку вместо объекта
+    if isinstance(d_authorize, str):
+        log.append(f"  connect_authorize returned string: {d_authorize[:300]}")
+        return {"ok": False, "error": f"connect_authorize: unexpected string response"}
 
     # Проверить тип ответа
     resp_type = d_authorize.get("type", "")
