@@ -208,6 +208,8 @@ def get_vk_auth_code(
             r_token = s.get("https://oauth.vk.com/token", params=token_params)
             d_token = r_token.json()
             log.append(f"[1] oauth.vk.com/token → {r_token.status_code}")
+            if r_token.status_code != 200:
+                log.append(f"  VK response: {d_token}")
 
             if "error" in d_token:
                 err = d_token["error"]
