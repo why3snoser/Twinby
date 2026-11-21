@@ -703,39 +703,93 @@ INTEREST_GROUPS = {
 LANGUAGES = [["753298335899156481", "Азербайджанский"], ["753298335914754049", "Албанский"], ["753298335928254465", "Амхарский"], ["753298335940608001", "Английский"], ["753298335953027073", "Арабский"], ["753298335970492417", "Армянский"], ["753298335984877569", "Африкаанс"], ["753298335999787009", "Белорусский"], ["753298336015220737", "Бенгальский"], ["753298336028360705", "Бирманский"], ["753298336040550401", "Болгарский"], ["753298336052674561", "Боснийский"], ["753298336068042753", "Валлийский"], ["753298336083247105", "Венгерский"], ["753298336097435649", "Вьетнамский"], ["753298336113229825", "Голландский"], ["753298336127254529", "Греческий"], ["753298336144916481", "Грузинский"], ["753298336162119681", "Гуджарати"], ["753298336188399617", "Датский"], ["753298336203833345", "Иврит"], ["753298336217792513", "Индонезийский"], ["753298336233979905", "Ирландский"], ["753298336247283713", "Итальянский"], ["753298336264192001", "Исландский"], ["753298336278642689", "Испанский"], ["753298336295059457", "Казахский"], ["753298336309313537", "Каталанский"], ["753298336322912257", "Киргизский"], ["753298336336412673", "Китайский"], ["753298336349650945", "Корейский"], ["753298336363118593", "Кхмерский"], ["753298336378126337", "Лаосский"], ["753298336394706945", "Латышский"], ["753298336409714689", "Литовский"], ["753298336424820737", "Люксембургский"], ["753298336437731329", "Малагасийский"], ["753298336450838529", "Малазийский"], ["753298336465551361", "Мальтийский"], ["753298336485310465", "Македонский"], ["753298336504643585", "Монгольский"], ["753298336517685249", "Немецкий"], ["753298336534921217", "Непальский"], ["753298336548651009", "Норвежский"], ["753298336562511873", "Пенджабский"], ["753298336578076673", "Персидский"], ["753298336592461825", "Польский"], ["753298336605634561", "Португальский"], ["753298336621527041", "Румынский"], ["753298336634404865", "Русский"], ["753298336648462337", "Сербский"], ["753298336662749185", "Сингальский"], ["753298336678182913", "Словацкий"], ["753298336690077697", "Словенский"], ["753298336701808641", "Суахили"], ["753298336715767809", "Таджикский"], ["753298336730218497", "Тайский"], ["753298336746242049", "Филиппинский"], ["753298336759578625", "Тамильский"], ["753298336772685825", "Татарский"], ["753298336786776065", "Телугу"], ["753298336799326209", "Турецкий"], ["753298336817840129", "Узбекский"], ["753298336830914561", "Украинский"], ["753298336843923457", "Урду"], ["753298336896516097", "Финский"], ["753298336957661185", "Французский"], ["753298337057603585", "Хинди"], ["753298337251459073", "Хорватский"], ["753298337451933697", "Чешский"], ["753298337651490817", "Шведский"], ["753298337851015169", "Эстонский"], ["753298338052440065", "Японский"]]
 # -----------------------------------------------------------------------------------------------
 
-PAGE = """
+AUTH_VK_PATH = "/api/auth/v2/oauth/by-token"   # прямой VK access token → JWT
+DATING_SEARCH_PATH = "/api/dating/search/"       # GET → список анкет для свайпа
+USERS_PUBLIC_PATH = "/api/users/{uid}/"           # GET → публичный профиль по ID
+
+# Хранилище аккаунтов в памяти (сбрасывается при рестарте). Формат: {label: {vk_token, jwt, user_id, name}}
+ACCOUNTS: dict[str, dict] = {}
+
+def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
+    """Layout wrapper. tab = 'main'|'accounts'|'swipe'."""
+    tabs_html = ""
+    for t, href, label in [("main", "/", "Онбординг"), ("accounts", "/accounts", "Аккаунты"), ("swipe", "/swipe", "Свайпы")]:
+        cls = "active" if t == tab else ""
+        tabs_html += f'<a href="{href}" class="{cls}">{label}</a>'
+    log_html = f'<h3 style="margin-top:30px">Консоль</h3><pre>{log}</pre>' if log else ""
+    err_html = f'<p class="err">{error}</p>' if error else ""
+    return PAGE_LAYOUT.replace("{{TABS}}", tabs_html).replace("{{CONTENT}}", content).replace("{{LOG}}", log_html).replace("{{ERROR}}", err_html)
+
+PAGE_LAYOUT = """
 <!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Twinby (local)</title>
+<title>Twinby Tool</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px;background:#111;color:#eee}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;max-width:780px;margin:0 auto;padding:0 16px 60px;background:#0d0d0d;color:#eee}
+/* --- tabs --- */
+.tabs{display:flex;gap:0;margin:20px 0 0;border-bottom:2px solid #333}
+.tabs a{padding:12px 22px;color:#888;text-decoration:none;font-weight:600;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-2px;transition:.15s}
+.tabs a:hover{color:#ccc}
+.tabs a.active{color:#3a7;border-bottom-color:#3a7}
+h1{margin:24px 0 0;font-size:22px;font-weight:700;color:#eee}
+.subtitle{color:#666;font-size:13px;margin:4px 0 0}
 label.l{display:block;margin-top:14px;font-size:14px;color:#aaa}
-input[type=text],input[type=date],input[type=file],select,textarea{width:100%;padding:8px;margin-top:4px;background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;box-sizing:border-box}
-textarea{min-height:70px}
-button.go{margin-top:20px;padding:10px 18px;background:#3a7;color:#000;border:0;border-radius:6px;font-weight:600;cursor:pointer}
-button.go.alt{background:#555;color:#eee}
+input[type=text],input[type=number],input[type=date],input[type=file],select,textarea{width:100%;padding:8px;margin-top:4px;background:#1a1a1a;color:#eee;border:1px solid #333;border-radius:6px}
+textarea{min-height:70px;resize:vertical}
+button.go{margin-top:16px;padding:10px 20px;background:#3a7;color:#000;border:0;border-radius:6px;font-weight:600;cursor:pointer;font-size:14px}
+button.go:hover{background:#4b8}
+button.go.alt{background:#444;color:#eee}
+button.go.alt:hover{background:#555}
 button.go.dislike{background:#a33;color:#fff}
-pre{white-space:pre-wrap;background:#1c1c1c;padding:12px;border-radius:6px;border:1px solid #333}
+button.go.dislike:hover{background:#c44}
+button.go.danger{background:#a33;color:#fff}
+pre{white-space:pre-wrap;background:#1a1a1a;padding:12px;border-radius:6px;border:1px solid #333;font-size:13px;max-height:400px;overflow-y:auto}
 fieldset{margin-top:22px;border:1px solid #333;border-radius:8px;padding:4px 14px 14px}
-legend{color:#3a7;padding:0 6px}
-.warn{color:#f90;font-size:13px}.err{color:#f55}.hint{color:#777;font-size:12px}
+legend{color:#3a7;padding:0 6px;font-weight:600}
+.warn{color:#f90;font-size:13px}.err{color:#f55}.ok{color:#3a7}.hint{color:#666;font-size:12px}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .chip{position:relative}
 .chip input{position:absolute;opacity:0;pointer-events:none}
-.chip span{display:inline-block;padding:7px 13px;border:1px solid #333;border-radius:999px;background:#1c1c1c;color:#ccc;cursor:pointer;font-size:14px;user-select:none}
+.chip span{display:inline-block;padding:7px 13px;border:1px solid #333;border-radius:999px;background:#1a1a1a;color:#ccc;cursor:pointer;font-size:14px;user-select:none;transition:.15s}
 .chip input:checked+span{background:#3a7;color:#000;border-color:#3a7;font-weight:600}
 .chip input:focus-visible+span{outline:2px solid #fff}
 h4{margin:16px 0 0;color:#aaa;font-weight:500;font-size:13px}
-.sug button{margin:4px 6px 0 0;padding:6px 12px;border-radius:999px;border:1px solid #333;background:#1c1c1c;color:#eee;cursor:pointer}
+.sug button{margin:4px 6px 0 0;padding:6px 12px;border-radius:999px;border:1px solid #333;background:#1a1a1a;color:#eee;cursor:pointer}
 .sug button:hover{border-color:#3a7}
 #cityPick{margin-top:6px;color:#3a7;font-size:14px}
 .row{display:flex;gap:10px}.row>div{flex:1}
 .actions-row{display:flex;gap:10px;margin-top:8px}
+/* account cards */
+.acct-card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px 16px;margin-top:10px;display:flex;justify-content:space-between;align-items:center}
+.acct-card .info{font-size:14px}.acct-card .info b{color:#3a7}
+.acct-card .jwt{font-size:11px;color:#666;word-break:break-all;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.copy-btn{background:#333;color:#eee;border:1px solid #555;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px}
+.copy-btn:hover{background:#444}
+/* swipe card */
+.swipe-card{background:#1a1a1a;border:1px solid #333;border-radius:10px;padding:16px;margin-top:12px;text-align:center}
+.swipe-card img{max-width:200px;max-height:260px;border-radius:8px;margin-bottom:10px}
+.swipe-card .name{font-size:18px;font-weight:600;color:#eee}
+.swipe-card .meta{font-size:13px;color:#888;margin-top:4px}
+table.log-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+table.log-table td,table.log-table th{padding:6px 10px;border-bottom:1px solid #222;text-align:left}
+table.log-table th{color:#888;font-weight:500}
 </style></head><body>
-<h2>Twinby — локальный онбординг и профиль</h2>
-<p class="warn">Работает только на твоём компьютере. Токен уходит только на twinby.ru.</p>
-<form method="post" enctype="multipart/form-data">
-  <label class="l">Access token (только первый JWT, без refreshToken)</label>
-  <textarea id="token" name="token" required>{{ f.token }}</textarea>
+<h1>Twinby Tool</h1>
+<p class="subtitle">Онбординг, профиль, свайпы. Токены уходят только на twinby.ru.</p>
+
+<div class="tabs">{{TABS}}</div>
+
+{{CONTENT}}
+
+{{LOG}}
+{{ERROR}}
+</body></html>
+"""
+
+PAGE_MAIN = """
+<form method="post" action="/" enctype="multipart/form-data">
+  <label class="l">Access token (JWT)</label>
+  <textarea id="token" name="token" required placeholder="Вставь JWT токен или получи через вкладку Аккаунты">{{ f.token }}</textarea>
 
   <label class="l"><input type="checkbox" name="profile_only" {{ 'checked' if f.profile_only }}>
     Только профиль (онбординг на этом аккаунте уже пройден)</label>
@@ -759,11 +813,8 @@ h4{margin:16px 0 0;color:#aaa;font-weight:500;font-size:13px}
     <label class="l">Видео для /api/photo/liveness/v2 (.mp4, как записывает приложение)</label>
     <input type="file" name="liveness_video" accept="video/mp4,.mp4">
     <label><input type="checkbox" name="vflip"> Перевернуть видео (vflip)</label>
-    <p class="hint">Видео автоматически конвертируется в формат Android MediaRecorder (640×480, Baseline, без аудио).
-      Если поле пустое — шаг пропускается.
-      ВАЖНО: сервер реально разбирает содержимое ролика (детекция лица/жеста) — видео с нормальными
-      пропорциями лица (без сплющивания/растяжения кадра при конвертации) проходит, искажённое даёт 422
-      "Invalid verification payload".</p>
+    <p class="hint">Видео автоматически конвертируется в формат Android MediaRecorder (640x480, Baseline, без аудио).
+      Если поле пустое — шаг пропускается.</p>
   </fieldset>
 
   <fieldset><legend>Профиль (ничего не выбрано = не трогать)</legend>
@@ -796,7 +847,7 @@ h4{margin:16px 0 0;color:#aaa;font-weight:500;font-size:13px}
       <label class="chip"><input type="radio" name="{{ key }}" value="" {{ 'checked' if not f[key] }}><span>не менять</span></label>
     </div>
     {% endfor %}
-    <p class="hint">Числа за кнопками образования, детей, алкоголя и курения из HAR не подтверждены (см. комментарий в app.py). Проверь на сайте после первого запуска.</p>
+    <p class="hint">Числа за кнопками образования, детей, алкоголя и курения из HAR не подтверждены (см. комментарий в app.py).</p>
 
     <label class="l">Языки</label>
     <input type="text" id="langFilter" placeholder="фильтр по названию">
@@ -820,23 +871,9 @@ h4{margin:16px 0 0;color:#aaa;font-weight:500;font-size:13px}
     <label class="l"><input type="checkbox" name="zodiac" {{ 'checked' if f.zodiac }}> Показывать знак зодиака</label>
   </fieldset>
 
-  <fieldset><legend>Лайк / дизлайк по ID анкеты</legend>
-    <label class="l">ID анкеты (user)</label>
-    <input type="text" name="action_user_id" value="{{ f.action_user_id }}" inputmode="numeric" placeholder="например: 9462606418650 72645">
-    <p class="hint">Отправляет POST /api/dating/action/from-search-action/ с телом {"user": ID, "type": 0|1}.
-      type=0 — лайк, type=1 — дизлайк (подтверждено вручную сверкой со свайпами в приложении, 2026-11-21).
-      Эта кнопка не трогает онбординг/профиль выше — срабатывает только отправка действия.</p>
-    <div class="actions-row">
-      <button class="go" type="submit" name="mode" value="like">👍 Лайк</button>
-      <button class="go dislike" type="submit" name="mode" value="dislike">👎 Дизлайк</button>
-    </div>
-  </fieldset>
-
   <label class="l"><input type="checkbox" name="dry_run" {{ 'checked' if f.dry_run }}> dry-run (ничего не отправлять, GET-запросы выполняются)</label>
-  <button class="go" type="submit" name="mode" value="full">Запустить (онбординг/профиль/верификация)</button>
+  <button class="go" type="submit" name="mode" value="full">Запустить (онбординг / профиль / верификация)</button>
 </form>
-{% if log %}<h3>Консоль</h3><pre>{{ log }}</pre>{% endif %}
-{% if error %}<p class="err">{{ error }}</p>{% endif %}
 <script>
 const $ = id => document.getElementById(id);
 let timer = null;
@@ -872,7 +909,95 @@ $('langFilter').addEventListener('input', e => {
   document.querySelectorAll('#langs .chip').forEach(l => { l.style.display = l.dataset.n.includes(q) ? '' : 'none'; });
 });
 </script>
-</body></html>
+"""
+
+PAGE_ACCOUNTS = """
+<form method="post" action="/accounts">
+  <fieldset><legend>Добавить аккаунт через VK токен</legend>
+    <label class="l">Метка (любое имя для себя)</label>
+    <input type="text" name="label" value="" placeholder="например: main или test1" required>
+    <label class="l">VK Access Token</label>
+    <textarea name="vk_token" required placeholder="vk1.a.SQVIJP3j-7rv..."></textarea>
+    <p class="hint">Софт сам отправит POST /api/auth/v2/oauth/by-token с provider=vk и получит JWT.
+      Полученный токен можно скопировать и вставить на вкладке Онбординг или Свайпы.</p>
+    <button class="go" type="submit" name="action" value="add">Получить JWT</button>
+  </fieldset>
+</form>
+
+{% if accounts %}
+<h3 style="margin-top:24px">Сохранённые аккаунты ({{ accounts|length }})</h3>
+{% for label, acc in accounts.items() %}
+<div class="acct-card">
+  <div class="info">
+    <b>{{ label }}</b>
+    {% if acc.name %} — {{ acc.name }}{% endif %}
+    {% if acc.user_id %} <span style="color:#666">(id: {{ acc.user_id }})</span>{% endif %}
+    <br><span class="jwt" title="{{ acc.jwt }}">JWT: {{ acc.jwt[:60] }}...</span>
+  </div>
+  <div style="display:flex;gap:6px;align-items:center">
+    <button class="copy-btn" onclick="navigator.clipboard.writeText('{{ acc.jwt }}');this.textContent='OK!';setTimeout(()=>this.textContent='Copy JWT',1000)">Copy JWT</button>
+    <form method="post" action="/accounts" style="margin:0"><input type="hidden" name="label" value="{{ label }}">
+      <button class="copy-btn" type="submit" name="action" value="remove" style="color:#f55;border-color:#a33">X</button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+"""
+
+PAGE_SWIPE = """
+<form method="post" action="/swipe">
+  <label class="l">Access token (JWT)</label>
+  <textarea id="swipe_token" name="token" required placeholder="Вставь JWT или скопируй из вкладки Аккаунты">{{ f.token }}</textarea>
+
+  {% if accounts %}
+  <div style="margin-top:8px">
+    <span class="hint">Быстрый выбор:</span>
+    {% for label, acc in accounts.items() %}
+    <button type="button" class="copy-btn" style="margin:2px" onclick="document.getElementById('swipe_token').value='{{ acc.jwt }}'">{{ label }}</button>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <fieldset><legend>Лайк / дизлайк по ID</legend>
+    <label class="l">ID анкеты</label>
+    <input type="text" name="action_user_id" value="{{ f.action_user_id }}" inputmode="numeric" placeholder="ID пользователя">
+    <div class="actions-row">
+      <button class="go" type="submit" name="mode" value="like">&#128077; Лайк</button>
+      <button class="go dislike" type="submit" name="mode" value="dislike">&#128078; Дизлайк</button>
+    </div>
+  </fieldset>
+
+  <fieldset><legend>Автосвайп (лента)</legend>
+    <p class="hint">Загружает анкеты из ленты поиска и позволяет лайкать/дизлайкать по очереди.
+      Результаты выводятся в консоль ниже.</p>
+    <label class="l">Количество анкет для загрузки</label>
+    <input type="number" name="fetch_count" value="{{ f.fetch_count or 10 }}" min="1" max="100" style="max-width:120px">
+    <div class="actions-row">
+      <button class="go" type="submit" name="mode" value="fetch_feed">Загрузить ленту</button>
+      <button class="go alt" type="submit" name="mode" value="like_all">&#128077; Лайкнуть все загруженные</button>
+    </div>
+  </fieldset>
+</form>
+
+{% if feed %}
+<h3 style="margin-top:24px">Лента ({{ feed|length }} анкет)</h3>
+{% for u in feed %}
+<div class="swipe-card" style="text-align:left;display:flex;gap:16px;align-items:center">
+  {% if u.photo %}<img src="{{ u.photo }}" alt="photo" style="max-width:80px;max-height:100px;border-radius:6px">{% endif %}
+  <div style="flex:1">
+    <div class="name">{{ u.name or '—' }}, {{ u.age or '?' }}</div>
+    <div class="meta">id: {{ u.id }}{% if u.city %} · {{ u.city }}{% endif %}</div>
+  </div>
+  <form method="post" action="/swipe" style="display:flex;gap:6px;margin:0">
+    <input type="hidden" name="token" value="{{ f.token }}">
+    <input type="hidden" name="action_user_id" value="{{ u.id }}">
+    <button class="go" type="submit" name="mode" value="like" style="margin:0;padding:6px 14px">&#128077;</button>
+    <button class="go dislike" type="submit" name="mode" value="dislike" style="margin:0;padding:6px 14px">&#128078;</button>
+  </form>
+</div>
+{% endfor %}
+{% endif %}
 """
 
 DEFAULTS = dict(token="", profile_only=False, name="", birthday="", gender="m",
@@ -880,7 +1005,7 @@ DEFAULTS = dict(token="", profile_only=False, name="", birthday="", gender="m",
                 about="", height="", city_id="", city_name="", religion_id="",
                 education="", children="", alcohol="", smoking="",
                 language=[], interest=[], zodiac=True, zodiac_touch=False, dry_run=False,
-                action_user_id="")
+                action_user_id="", fetch_count=10)
 
 
 def resolve_by_ids(wanted: list[str], items: list[dict], what: str) -> list[dict]:
@@ -1165,24 +1290,228 @@ def send_liveness(c, video_file, tee) -> None:
     tee(f"❌ Верификация НЕ пройдена после {max_attempts} попыток")
 
 
+def _make_web_client(token: str, dry: bool, tee):
+    """Создаёт WebClient с логированием."""
+    class WebClient(tw.Client):
+        def call(self, method, path, **kw):
+            shown = path + ("?" + "&".join(f"{k}={v}" for k, v in kw["params"].items()) if kw.get("params") else "")
+            tee(f"{method} {shown}" + (" [dry-run]" if self.dry and method != "GET" else ""))
+            if self.dry and method != "GET":
+                return {}
+            r = self.http.request(method, path, **kw)
+            if r.status_code >= 400:
+                raise RuntimeError(f"{method} {path} -> {r.status_code}: {r.text[:300]}")
+            return r.json() if r.content else {}
+
+    if "refreshToken" in token or '"' in token:
+        raise RuntimeError("В поле токена попал лишний хвост (refreshToken). Вставь только первый JWT.")
+    c = WebClient(dry)
+    c.auth(token)
+    return c
+
+
+def _render(template_str: str, tab: str, log_buf, error=None, **extra):
+    """Рендерит страницу: сначала Jinja2 для контента, потом вставляет в layout."""
+    from markupsafe import Markup
+    singles = [("education", "Образование", EDUCATION), ("children", "Дети", CHILDREN),
+               ("alcohol", "Алкоголь", HABIT), ("smoking", "Курение", HABIT)]
+    content_html = render_template_string(
+        template_str,
+        religions=RELIGIONS, singles=singles,
+        languages=LANGUAGES, groups=INTEREST_GROUPS,
+        hmin=HEIGHT_MIN, hmax=HEIGHT_MAX,
+        accounts=ACCOUNTS,
+        **extra
+    )
+    log_text = log_buf.getvalue() if log_buf else None
+    return _page(tab, Markup(content_html), log=log_text, error=error)
+
+
+# ---- Вкладка: Аккаунты ----
+@app.route("/accounts", methods=["GET", "POST"])
+def accounts_page():
+    log_buf = io.StringIO()
+    tee = lambda msg: log_buf.write(msg + "\n")
+    error = None
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        label = request.form.get("label", "").strip()
+
+        if action == "remove" and label in ACCOUNTS:
+            del ACCOUNTS[label]
+            tee(f"Аккаунт '{label}' удалён")
+
+        elif action == "add":
+            vk_token = request.form.get("vk_token", "").strip()
+            if not label:
+                error = "Укажи метку для аккаунта"
+            elif not vk_token:
+                error = "Вставь VK access token"
+            else:
+                try:
+                    tee(f"POST {AUTH_VK_PATH} (provider=vk)")
+                    import httpx
+                    resp = httpx.post(
+                        f"{tw.BASE}{AUTH_VK_PATH}",
+                        json={"provider": "vk", "token": vk_token},
+                        headers={"User-Agent": tw.UA, "Accept": "application/json",
+                                 "Content-Type": "application/json"},
+                        timeout=30,
+                    )
+                    tee(f"Статус: {resp.status_code}")
+                    if resp.status_code >= 400:
+                        raise RuntimeError(f"Сервер вернул {resp.status_code}: {resp.text[:400]}")
+                    data = resp.json()
+                    jwt_token = data.get("accessToken", "")
+                    if not jwt_token:
+                        raise RuntimeError(f"В ответе нет accessToken: {json.dumps(data, ensure_ascii=False)[:400]}")
+
+                    # Попробуем получить имя и ID профиля
+                    user_name = ""
+                    user_id = ""
+                    try:
+                        me_resp = httpx.get(
+                            f"{tw.BASE}{tw.API['me']}",
+                            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                                     "Authorization": f"JWT {jwt_token}"},
+                            timeout=15,
+                        )
+                        if me_resp.status_code < 400:
+                            me_data = me_resp.json()
+                            user_name = me_data.get("name", "")
+                            user_id = str(me_data.get("id", ""))
+                    except Exception:
+                        pass
+
+                    ACCOUNTS[label] = {
+                        "vk_token": vk_token,
+                        "jwt": jwt_token,
+                        "user_id": user_id,
+                        "name": user_name,
+                    }
+                    tee(f"Аккаунт '{label}' добавлен (JWT получен, id={user_id}, name={user_name})")
+                    tee(f"JWT: {jwt_token[:80]}...")
+                except Exception as e:
+                    tee(f"ERROR: {e}")
+                    tee(traceback.format_exc(limit=3))
+
+    return _render(PAGE_ACCOUNTS, "accounts", log_buf, error, f={})
+
+
+# ---- Вкладка: Свайпы ----
+@app.route("/swipe", methods=["GET", "POST"])
+def swipe_page():
+    f = dict(DEFAULTS)
+    log_buf = io.StringIO()
+    tee = lambda msg: log_buf.write(msg + "\n")
+    feed = []
+
+    if request.method == "POST":
+        f["token"] = request.form.get("token", "").strip().strip('"\'')
+        f["action_user_id"] = request.form.get("action_user_id", "").strip()
+        f["fetch_count"] = request.form.get("fetch_count", "10").strip()
+        mode = request.form.get("mode", "")
+
+        try:
+            c = _make_web_client(f["token"], False, tee)
+
+            if mode in ("like", "dislike"):
+                uid = f["action_user_id"]
+                action_type = 0 if mode == "like" else 1
+                label = "LIKE" if action_type == 0 else "DISLIKE"
+
+                # Попробуем получить имя пользователя
+                user_info = ""
+                try:
+                    udata = c.call("GET", f"/api/users/{uid}/")
+                    if isinstance(udata, dict):
+                        user_info = f" ({udata.get('name', '?')}, {udata.get('age', '?')})"
+                except Exception:
+                    pass
+
+                send_dating_action(c, uid, action_type, tee)
+                # Лог в серверную консоль
+                print(f"[SWIPE] {label} user={uid}{user_info}")
+
+            elif mode == "fetch_feed":
+                count = min(int(f["fetch_count"] or 10), 100)
+                tee(f"Загружаю ленту ({count} анкет)...")
+                try:
+                    result = c.call("GET", DATING_SEARCH_PATH)
+                    if isinstance(result, list):
+                        for item in result[:count]:
+                            u = item if isinstance(item, dict) else {}
+                            uid = str(u.get("id", u.get("userId", "")))
+                            name = u.get("name", "")
+                            age = u.get("age", "")
+                            city = u.get("nameCity", u.get("city", ""))
+                            photos = u.get("photos", [])
+                            photo_url = ""
+                            if photos and isinstance(photos, list) and isinstance(photos[0], dict):
+                                photo_url = photos[0].get("url", photos[0].get("src", ""))
+                            feed.append({"id": uid, "name": name, "age": age, "city": city, "photo": photo_url})
+                            tee(f"  {name}, {age} — id={uid}" + (f", {city}" if city else ""))
+                        tee(f"Загружено {len(feed)} анкет")
+                        print(f"[FEED] Loaded {len(feed)} profiles")
+                    elif isinstance(result, dict) and "results" in result:
+                        for item in result["results"][:count]:
+                            u = item if isinstance(item, dict) else {}
+                            uid = str(u.get("id", u.get("userId", "")))
+                            name = u.get("name", "")
+                            age = u.get("age", "")
+                            city = u.get("nameCity", u.get("city", ""))
+                            photos = u.get("photos", [])
+                            photo_url = ""
+                            if photos and isinstance(photos, list) and isinstance(photos[0], dict):
+                                photo_url = photos[0].get("url", photos[0].get("src", ""))
+                            feed.append({"id": uid, "name": name, "age": age, "city": city, "photo": photo_url})
+                            tee(f"  {name}, {age} — id={uid}" + (f", {city}" if city else ""))
+                        tee(f"Загружено {len(feed)} анкет")
+                        print(f"[FEED] Loaded {len(feed)} profiles")
+                    else:
+                        tee(f"Формат ответа ленты неизвестен: {json.dumps(result, ensure_ascii=False)[:500]}")
+                except Exception as e:
+                    tee(f"Ошибка загрузки ленты: {e}")
+
+            elif mode == "like_all":
+                tee("Лайкаю все загруженные анкеты...")
+                # Нужен повторный fetch, т.к. feed не сохраняется между запросами
+                try:
+                    count = min(int(f["fetch_count"] or 10), 100)
+                    result = c.call("GET", DATING_SEARCH_PATH)
+                    items = result if isinstance(result, list) else result.get("results", []) if isinstance(result, dict) else []
+                    liked = 0
+                    for item in items[:count]:
+                        u = item if isinstance(item, dict) else {}
+                        uid = str(u.get("id", u.get("userId", "")))
+                        name = u.get("name", "?")
+                        age = u.get("age", "?")
+                        if uid:
+                            send_dating_action(c, uid, 0, tee)
+                            print(f"[SWIPE] LIKE user={uid} ({name}, {age})")
+                            liked += 1
+                            time.sleep(0.3)  # не спамим сервер
+                    tee(f"Лайкнуто {liked} анкет")
+                except Exception as e:
+                    tee(f"Ошибка: {e}")
+
+        except Exception as e:
+            tee(f"ERROR: {e}")
+            tee(traceback.format_exc(limit=3))
+
+    return _render(PAGE_SWIPE, "swipe", log_buf, feed=feed, f=f)
+
+
+# ---- Вкладка: Онбординг (главная) ----
 @app.route("/", methods=["GET", "POST"])
 def index():
     f = dict(DEFAULTS)
     log_buf = io.StringIO()
-
-    def tee(msg: str) -> None:
-        log_buf.write(msg + "\n")
-
-    def render(error=None):
-        singles = [("education", "Образование", EDUCATION), ("children", "Дети", CHILDREN),
-                   ("alcohol", "Алкоголь", HABIT), ("smoking", "Курение", HABIT)]
-        return render_template_string(PAGE, f=f, religions=RELIGIONS, singles=singles,
-                                      languages=LANGUAGES, groups=INTEREST_GROUPS,
-                                      hmin=HEIGHT_MIN, hmax=HEIGHT_MAX,
-                                      log=log_buf.getvalue() or None, error=error)
+    tee = lambda msg: log_buf.write(msg + "\n")
 
     if request.method == "GET":
-        return render()
+        return _render(PAGE_MAIN, "main", log_buf, f=f)
 
     form = request.form
     for k in ("token", "name", "birthday", "gender", "target_id", "interview_id", "about", "height",
@@ -1197,31 +1526,8 @@ def index():
     dry = f["dry_run"]
     mode = form.get("mode", "full")
 
-    class WebClient(tw.Client):
-        def call(self, method, path, **kw):
-            shown = path + ("?" + "&".join(f"{k}={v}" for k, v in kw["params"].items()) if kw.get("params") else "")
-            tee(f"{method} {shown}" + (" [dry-run]" if self.dry and method != "GET" else ""))
-            if self.dry and method != "GET":
-                return {}
-            r = self.http.request(method, path, **kw)
-            if r.status_code >= 400:
-                raise RuntimeError(f"{method} {path} -> {r.status_code}: {r.text[:300]}")
-            return r.json() if r.content else {}
-
     try:
-        if "refreshToken" in f["token"] or '"' in f["token"]:
-            raise RuntimeError("В поле токена попал лишний хвост (refreshToken). Вставь только первый JWT.")
-
-        c = WebClient(dry)
-        c.auth(f["token"])
-
-        if mode in ("like", "dislike"):
-            # Отдельная кнопка: только лайк/дизлайк, онбординг и профиль не трогаем.
-            send_dating_action(c, f["action_user_id"], 0 if mode == "like" else 1, tee)
-            me = c.call("GET", tw.API["me"])
-            if isinstance(me, dict) and me:
-                tee("done: " + json.dumps({"id": me.get("id")}, ensure_ascii=False))
-            return render()
+        c = _make_web_client(f["token"], dry, tee)
 
         if not f["profile_only"]:
             photo_file = request.files.get("photo")
@@ -1246,7 +1552,7 @@ def index():
             if not f["target_id"] or not f["interview_id"]:
                 tee("targets: " + json.dumps(c.call("GET", tw.API["targets"]), ensure_ascii=False)[:1500])
                 tee("interviews: " + json.dumps(c.call("GET", tw.API["interviews"]), ensure_ascii=False)[:1500])
-                return render("Укажи target_id и interview_id из списков выше и запусти снова.")
+                return _render(PAGE_MAIN, "main", log_buf, error="Укажи target_id и interview_id из списков выше и запусти снова.", f=f)
 
             c.call("POST", tw.API["agreement"])
             c.call("PATCH", tw.API["me"], json={"name": f["name"], "language": "RU"})
@@ -1284,7 +1590,30 @@ def index():
         tee("ERROR: " + str(e))
         tee(traceback.format_exc(limit=3))
 
-    return render()
+    return _render(PAGE_MAIN, "main", log_buf, f=f)
+
+
+@app.route("/city-search", methods=["POST"])
+def city_search():
+    data = request.get_json(force=True)
+    token = (data.get("token") or "").strip().strip('"\'')
+    q = (data.get("q") or "").strip()
+    if not token or not q:
+        return jsonify({"error": "need token and q"})
+    try:
+        import httpx
+        resp = httpx.get(
+            f"{tw.BASE}{API_PROFILE['city']}",
+            params={"name": q},
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Authorization": f"JWT {token}"},
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"error": f"status {resp.status_code}"})
+        return jsonify(resp.json())
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 if __name__ == "__main__":
