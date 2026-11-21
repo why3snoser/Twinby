@@ -800,12 +800,31 @@ def _make_proxied_httpx_client(proxy: str = "", **extra) -> "httpx.Client":
     return _httpx.Client(**kw)
 
 
+def _is_transient_v2_error(err: str) -> bool:
+    """
+    Ошибка сети/хоста Twinby (502/503/таймаут/обрыв соединения) — НЕ отклонение
+    авторизации. Пароль её не исправит: Twinby недоступен по той же причине что
+    через токен, что через password. Фоллбэк на password в этом случае только
+    жжёт реальный лимит попыток входа в сам VK (password_bruteforce — он копится
+    по аккаунту в VK, а не связан с тем, исправен ли токен).
+    """
+    if not err:
+        return False
+    markers = (
+        "502", "503", "504", "NO_HOST_CONNECTION", "timeout", "Timeout",
+        "ConnectError", "ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
+        "ConnectionError", "ProxyError",
+    )
+    return any(m in err for m in markers)
+
+
 def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
                      rucaptcha_key: str = "", proxy: str = "") -> dict:
     """
     Авторизация VK → Twinby JWT.
     Приоритет:
-      1. Если есть vk_token (vk1.a.) → Twinby v2 напрямую
+      1. Если есть vk_token (vk1.a.) → Twinby v2 напрямую (с ретраями на
+         транзиентные сетевые ошибки; на них НЕ фоллбэчим на пароль)
       2. Если есть login+pass → Direct Auth (oauth.vk.com) → Twinby v2
       3. Фоллбэк на старый v3 PKCE (login+pass через VK ID)
 
@@ -819,15 +838,34 @@ def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
         log.append(f"[AUTH] v2 (token): {vk_token[:30]}...")
         if proxy:
             log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
-        result = vk_auth.full_auth_v2("", "", rucaptcha_key, proxy=proxy, vk_token=vk_token)
-        log.extend(result.get("log", []))
-        if result.get("ok"):
-            log.append(f"[AUTH] v2 (token) OK: JWT={result['jwt'][:20]}...")
-            return {"ok": True, "jwt": result["jwt"], "log": log,
-                    "refresh_token": result.get("refresh_token", "")}
-        else:
-            log.append(f"[AUTH] v2 (token) FAILED: {result.get('error')}")
-            # Не фоллбэчим — если токен не сработал, login+pass тоже не помогут
+
+        token_err = "unknown"
+        max_token_attempts = 3
+        for attempt in range(1, max_token_attempts + 1):
+            result = vk_auth.full_auth_v2(vk_login, "", rucaptcha_key, proxy=proxy, vk_token=vk_token)
+            log.extend(result.get("log", []))
+            if result.get("ok"):
+                log.append(f"[AUTH] v2 (token) OK: JWT={result['jwt'][:20]}...")
+                return {"ok": True, "jwt": result["jwt"], "log": log,
+                        "refresh_token": result.get("refresh_token", "")}
+            token_err = result.get("error", "unknown")
+            if _is_transient_v2_error(token_err) and attempt < max_token_attempts:
+                log.append(f"[AUTH] v2 (token) транзиентная ошибка "
+                           f"(попытка {attempt}/{max_token_attempts}): {token_err} — повтор")
+                time.sleep(2 * attempt)
+                continue
+            break
+
+        log.append(f"[AUTH] v2 (token) FAILED: {token_err}")
+
+        if _is_transient_v2_error(token_err):
+            # Сеть/хост Twinby лежит — пароль тут не поможет и только сожжёт
+            # реальный VK-лимит попыток входа по паролю для этого аккаунта.
+            return {"ok": False,
+                    "error": f"Twinby v2 недоступен (сетевая ошибка после {max_token_attempts} попыток, "
+                             f"пароль не пробуем): {token_err}",
+                    "log": log}
+        # Иначе токен реально не принят (4xx и т.п.) — можно пробовать пароль ниже.
 
     # --- Путь 2: login+pass → Direct Auth → Twinby v2 ---
     if vk_login and vk_pass:

@@ -14,10 +14,13 @@ import hashlib
 import base64
 import secrets
 import json
+import os
+import random
 import re
 import time
 import urllib.parse
 import uuid as _uuid_mod
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -39,14 +42,18 @@ VK_API_VERSION = "5.280"
 
 UA_BROWSER = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.47 Safari/537.36"
 )
 UA_DART = "Dart/3.11 (dart:io)"
 
 # curl_cffi: какой браузер TLS/HTTP2-фингерпринт имитировать для VK ID флоу.
-# ДОЛЖЕН соответствовать версии Chrome из UA_BROWSER выше — несовпадение
-# User-Agent и JA3-фингерпринта само по себе детектируется антибот-системами.
-VK_IMPERSONATE = "chrome131"
+# ВАЖНО: curl_cffi 0.17.0 максимум умеет "chrome152" — реального JA3 для
+# Chrome/156 в библиотеке ещё нет. UA_BROWSER выше specifies 156 (взят из
+# реального GoLogin-профиля, которым прошёл ручной тест), а TLS-рукопожатие
+# будет от chrome152 — ближайшее доступное. Это не идеальное совпадение, но
+# расхождение в несколько минорных версий Chrome гораздо менее заметно, чем
+# прежний httpx-отпечаток, который не похож на Chrome вообще никак.
+VK_IMPERSONATE = "chrome152"
 
 # Способы подтверждения (из трафика: supported_ways поле)
 SUPPORTED_WAYS = (
@@ -81,6 +88,12 @@ def _uuid() -> str:
     return str(_uuid_mod.uuid4())
 
 
+def _human_pause(min_s: float, max_s: float) -> None:
+    """Случайная пауза в заданном диапазоне — вместо фиксированного sleep,
+    который для скрипта выглядит как метроном, а для человека так не бывает."""
+    time.sleep(random.uniform(min_s, max_s))
+
+
 def _normalize_proxy(raw: str) -> str:
     """ip:port:user:pass → http://user:pass@ip:port. Уже http:// — как есть."""
     raw = raw.strip()
@@ -96,6 +109,89 @@ def _normalize_proxy(raw: str) -> str:
     elif len(parts) == 2:
         return f"http://{parts[0]}:{parts[1]}"
     return raw
+
+
+# ---------------------------------------------------------------------------
+# Persistent VK identity (device_id, uuid, закреплённый proxy) — ПО АККАУНТУ
+# ---------------------------------------------------------------------------
+# Проблема: device_id/uuid генерились случайно на КАЖДУЮ попытку логина.
+# Для VK это выглядит как "один и тот же пароль вводят с нового незнакомого
+# устройства каждый раз" — сильный сигнал для password_bruteforce/антифрод,
+# независимо от фингерпринта транспорта. Плюс proxy мог выбираться заново на
+# каждый прогон (round-robin), так что один аккаунт логинился с разных IP в
+# разных попытках — ещё один сигнал. Фиксируем оба раз и навсегда на логин.
+#
+# Файл переживает рестарт процесса (как accounts.json/settings.json рядом).
+
+_VK_IDENTITY_FILE = Path(__file__).parent / "vk_identities.json"
+_identity_cache: dict | None = None
+
+
+def _load_identities() -> dict:
+    global _identity_cache
+    if _identity_cache is not None:
+        return _identity_cache
+    if _VK_IDENTITY_FILE.exists():
+        try:
+            _identity_cache = json.loads(_VK_IDENTITY_FILE.read_text())
+        except Exception:
+            _identity_cache = {}
+    else:
+        _identity_cache = {}
+    return _identity_cache
+
+
+def _save_identities(data: dict) -> None:
+    global _identity_cache
+    _identity_cache = data
+    tmp = _VK_IDENTITY_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    os.replace(tmp, _VK_IDENTITY_FILE)
+
+
+def get_pinned_identity(login: str, requested_proxy: str = "") -> dict:
+    """
+    Вернуть устойчивые device_id/uuid для этого VK-логина (создать при первом
+    обращении, дальше всегда одни и те же — как постоянный профиль GoLogin).
+
+    Прокси: если для логина уже закреплён прокси — он побеждает и
+    requested_proxy игнорируется (даже если вызывающий код прислал другой,
+    например из round-robin пула). Если ещё не закреплён — закрепляем тот,
+    что прислали сейчас, на все будущие попытки с этим логином.
+
+    Returns: {"device_id": str, "uuid": str, "proxy": str, "proxy_pinned_now": bool}
+    """
+    login = (login or "").strip()
+    data = _load_identities()
+    entry = data.get(login)
+
+    if entry is None:
+        entry = {
+            "device_id": _device_id(),
+            "uuid": _uuid(),
+            "proxy": requested_proxy or "",
+        }
+        data[login] = entry
+        _save_identities(data)
+        return {**entry, "proxy_pinned_now": bool(requested_proxy)}
+
+    changed = False
+    if not entry.get("device_id"):
+        entry["device_id"] = _device_id()
+        changed = True
+    if not entry.get("uuid"):
+        entry["uuid"] = _uuid()
+        changed = True
+    pinned_now = False
+    if not entry.get("proxy") and requested_proxy:
+        entry["proxy"] = requested_proxy
+        changed = True
+        pinned_now = True
+    if changed:
+        data[login] = entry
+        _save_identities(data)
+
+    return {**entry, "proxy_pinned_now": pinned_now}
 
 
 # ---------------------------------------------------------------------------
@@ -324,16 +420,22 @@ def _vk_id_login(
     log: list,
     rucaptcha_key: str = "",
     proxy: str = "",
+    device_id: str = "",
+    my_uuid: str = "",
 ) -> dict:
     """
     Полный VK ID login flow через id.vk.ru (app_id=7497650).
+
+    device_id/my_uuid — закреплённые за логином (см. get_pinned_identity),
+    чтобы VK видел один и тот же "девайс" при каждой попытке, а не новый
+    случайный каждый раз.
 
     Returns:
         ok=True:  access_token, silent_token, user_id
         ok=False: error
     """
-    my_uuid = _uuid()
-    device_id = _device_id()
+    my_uuid = my_uuid or _uuid()
+    device_id = device_id or _device_id()
 
     # ═══════════════════════════════════════════════════════════════════════
     # Step 1: GET id.vk.ru/auth — получить auth_token и anonymous_token
@@ -472,7 +574,7 @@ def _vk_id_login(
     if not anonymous_token:
         return {"ok": False, "error": "Не удалось получить anonymous_token из id.vk.ru/auth"}
 
-    time.sleep(0.3)
+    _human_pause(1.2, 3.0)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Step 2: POST login.vk.ru/?act=connect_internal
@@ -500,7 +602,7 @@ def _vk_id_login(
         log.append(f"  connect_internal failed: {e}")
         # Не фатально, продолжаем
 
-    time.sleep(0.3)
+    _human_pause(0.8, 2.2)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Step 3: POST api.vk.ru/method/auth.validateAccount
@@ -586,7 +688,8 @@ def _vk_id_login(
     else:
         return {"ok": False, "error": "Captcha: exceeded max attempts"}
 
-    time.sleep(0.5)
+    # Пауза перед отправкой пароля — имитация времени на набор пароля человеком.
+    _human_pause(2.0, 4.5)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Step 4: POST login.vk.ru/?act=connect_authorize (отправка пароля)
@@ -746,6 +849,21 @@ def get_vk_auth_code(
     state = _state()
     log: list[str] = []
 
+    # Закреплённые за этим логином device_id/uuid/proxy (см. get_pinned_identity) —
+    # чтобы VK видел один и тот же "девайс" и один и тот же IP при каждой
+    # попытке логина этого аккаунта, а не новую случайную комбинацию каждый раз.
+    identity = get_pinned_identity(login, requested_proxy=proxy)
+    pinned_device_id = identity["device_id"]
+    pinned_uuid = identity["uuid"]
+    pinned_proxy = identity["proxy"] or proxy
+    if pinned_proxy and pinned_proxy != proxy:
+        log.append(f"[identity] proxy переопределён на закреплённый за аккаунтом: "
+                    f"{pinned_proxy.split('@')[-1] if '@' in pinned_proxy else pinned_proxy}")
+    elif identity.get("proxy_pinned_now"):
+        log.append("[identity] proxy закреплён за этим аккаунтом на будущее")
+    log.append(f"[identity] device_id={pinned_device_id[:16]}... uuid={pinned_uuid[:8]}... (постоянные для этого логина)")
+    proxy = pinned_proxy
+
     try:
         # ВАЖНО: httpx даёт TLS/HTTP2 ClientHello, который легко отличим от
         # настоящего браузера (JA3-фингерпринт). VK's антибот на connect_authorize
@@ -768,7 +886,8 @@ def get_vk_auth_code(
 
         with cffi_requests.Session(**client_kw) as s:
             # Phase 1: VK ID login
-            vk_result = _vk_id_login(s, login, password, log, rucaptcha_key, proxy=proxy)
+            vk_result = _vk_id_login(s, login, password, log, rucaptcha_key, proxy=proxy,
+                                      device_id=pinned_device_id, my_uuid=pinned_uuid)
             if not vk_result.get("ok"):
                 return {**vk_result, "log": log}
 
@@ -1072,6 +1191,9 @@ def twinby_auth_v3(
 def full_auth(login: str, password: str, rucaptcha_key: str = "", proxy: str = "") -> dict:
     """VK ID login → auth code → Twinby JWT (старый путь через id.vk.ru)."""
     proxy = _normalize_proxy(proxy)
+    # Резолвим тот же закреплённый за аккаунтом proxy, что get_vk_auth_code
+    # использует внутри себя — чтобы шаг отправки кода в Twinby шёл с того же IP.
+    proxy = get_pinned_identity(login, requested_proxy=proxy).get("proxy") or proxy
 
     vk_result = get_vk_auth_code(login, password, rucaptcha_key, proxy=proxy)
     if not vk_result.get("ok"):
@@ -1268,6 +1390,19 @@ def full_auth_v2(
     """
     proxy = _normalize_proxy(proxy)
     log: list[str] = []
+
+    # Закрепляем proxy за аккаунтом и здесь: токен-путь и Direct Auth тоже
+    # должны всегда ходить с одного и того же IP для этого логина, а не
+    # с разных прокси из round-robin пула на разных прогонах/фоллбэках.
+    if login:
+        identity = get_pinned_identity(login, requested_proxy=proxy)
+        pinned_proxy = identity.get("proxy") or proxy
+        if pinned_proxy and pinned_proxy != proxy:
+            log.append(f"[v2][identity] proxy переопределён на закреплённый: "
+                        f"{pinned_proxy.split('@')[-1] if '@' in pinned_proxy else pinned_proxy}")
+        elif identity.get("proxy_pinned_now"):
+            log.append("[v2][identity] proxy закреплён за этим аккаунтом на будущее")
+        proxy = pinned_proxy
 
     if vk_token:
         log.append(f"[v2] Using existing VK token: {vk_token[:30]}...")
