@@ -1057,7 +1057,7 @@ def twinby_auth_v3(
 # ---------------------------------------------------------------------------
 
 def full_auth(login: str, password: str, rucaptcha_key: str = "", proxy: str = "") -> dict:
-    """VK ID login → auth code → Twinby JWT."""
+    """VK ID login → auth code → Twinby JWT (старый путь через id.vk.ru)."""
     proxy = _normalize_proxy(proxy)
 
     vk_result = get_vk_auth_code(login, password, rucaptcha_key, proxy=proxy)
@@ -1080,6 +1080,202 @@ def full_auth(login: str, password: str, rucaptcha_key: str = "", proxy: str = "
         return {"ok": False, "error": tw_result["error"], "log": log}
 
     log.append(f"Twinby JWT OK: {tw_result['accessToken'][:25]}...")
+    return {
+        "ok": True,
+        "jwt": tw_result["accessToken"],
+        "refresh_token": tw_result.get("refreshToken", ""),
+        "log": log,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Direct Auth: oauth.vk.com/token (grant_type=password)
+# ---------------------------------------------------------------------------
+
+# Креды официального VK Android приложения (публично известны)
+VK_ANDROID_APP_ID = "2274003"
+VK_ANDROID_APP_SECRET = "hHbZxrka2uZ6jB1inYsH"
+
+UA_VK_ANDROID = (
+    "VKAndroidApp/8.47-18556 (Android 13; SDK 33; arm64-v8a; "
+    "samsung SM-G991B; ru; 2340x1080)"
+)
+
+
+def _vk_direct_auth(
+    login: str,
+    password: str,
+    rucaptcha_key: str = "",
+    proxy: str = "",
+    captcha_sid: str = "",
+    captcha_key: str = "",
+) -> dict:
+    """
+    VK Direct Auth через oauth.vk.com/token (как официальное Android-приложение).
+    Возвращает {"ok": True, "access_token": "...", "user_id": ..., "log": [...]}
+    или {"ok": False, "error": "...", "log": [...]}.
+    """
+    log: list[str] = []
+    log.append(f"[DirectAuth] login={login[:4]}***")
+
+    params = {
+        "grant_type": "password",
+        "client_id": VK_ANDROID_APP_ID,
+        "client_secret": VK_ANDROID_APP_SECRET,
+        "username": login,
+        "password": password,
+        "v": VK_API_VERSION,
+        "2fa_supported": "1",
+        "force_sms": "0",
+        "lang": "ru",
+    }
+    if captcha_sid and captcha_key:
+        params["captcha_sid"] = captcha_sid
+        params["captcha_key"] = captcha_key
+
+    headers = {
+        "User-Agent": UA_VK_ANDROID,
+        "Accept": "application/json",
+    }
+
+    kw: dict = {"headers": headers, "timeout": 20}
+    if proxy:
+        kw["proxy"] = proxy
+
+    try:
+        resp = httpx.get("https://oauth.vk.com/token", params=params, **kw)
+        data = resp.json()
+        log.append(f"[DirectAuth] status={resp.status_code}")
+    except Exception as e:
+        log.append(f"[DirectAuth] request failed: {e}")
+        return {"ok": False, "error": str(e), "log": log}
+
+    # Успех
+    if "access_token" in data:
+        token = data["access_token"]
+        uid = data.get("user_id", "?")
+        log.append(f"[DirectAuth] OK! token={token[:30]}... user_id={uid}")
+        return {
+            "ok": True,
+            "access_token": token,
+            "user_id": uid,
+            "log": log,
+        }
+
+    error = data.get("error", "")
+    error_desc = data.get("error_description", "")
+    log.append(f"[DirectAuth] error={error} desc={error_desc}")
+
+    # Капча
+    if error == "need_captcha":
+        c_sid = data.get("captcha_sid", "")
+        c_img = data.get("captcha_img", "")
+        log.append(f"[DirectAuth] captcha needed, sid={c_sid}")
+
+        if not rucaptcha_key:
+            return {"ok": False, "error": "need_captcha (no rucaptcha key)", "log": log}
+
+        # Решаем image captcha через RuCaptcha
+        log.append(f"[DirectAuth] solving captcha via RuCaptcha...")
+        solved = _solve_captcha_image(c_img, rucaptcha_key, proxy=proxy)
+        if not solved:
+            return {"ok": False, "error": "captcha solve failed", "log": log}
+
+        log.append(f"[DirectAuth] captcha solved: {solved}")
+        # Повторяем запрос с капчей
+        return _vk_direct_auth(
+            login, password, rucaptcha_key, proxy,
+            captcha_sid=c_sid, captcha_key=solved,
+        )
+
+    # 2FA
+    if error == "need_validation":
+        redirect_uri = data.get("redirect_uri", "")
+        log.append(f"[DirectAuth] 2FA needed: {redirect_uri[:80]}")
+        return {"ok": False, "error": f"need_2fa: {error_desc}", "log": log}
+
+    # Любая другая ошибка
+    return {"ok": False, "error": f"{error}: {error_desc}", "log": log}
+
+
+# ---------------------------------------------------------------------------
+# Twinby auth v2: VK access_token → Twinby JWT
+# ---------------------------------------------------------------------------
+
+def twinby_auth_v2(access_token: str, proxy: str = "") -> dict:
+    """Отправить VK access_token на Twinby v2 → JWT."""
+    body = {
+        "provider": "vk",
+        "token": access_token,
+    }
+
+    try:
+        post_kw: dict = {
+            "json": body,
+            "headers": {
+                "User-Agent": UA_DART,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            "timeout": 30,
+        }
+        if proxy:
+            post_kw["proxy"] = proxy
+        resp = httpx.post(
+            "https://twinby.ru/api/auth/v2/oauth/by-token",
+            **post_kw,
+        )
+        if resp.status_code >= 400:
+            return {"ok": False, "error": f"Twinby v2: {resp.status_code} {resp.text[:300]}"}
+        d = resp.json()
+        at = d.get("accessToken", "")
+        if not at:
+            return {"ok": False, "error": f"No accessToken in v2 response: {json.dumps(d)[:300]}"}
+        return {"ok": True, "accessToken": at, "refreshToken": d.get("refreshToken", "")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Полный цикл v2: Direct Auth → Twinby v2
+# ---------------------------------------------------------------------------
+
+def full_auth_v2(
+    login: str,
+    password: str,
+    rucaptcha_key: str = "",
+    proxy: str = "",
+    vk_token: str = "",
+) -> dict:
+    """
+    Новый путь регистрации:
+    - Если есть vk_token (vk1.a.) → сразу на Twinby v2
+    - Иначе: Direct Auth (oauth.vk.com) → получить access_token → Twinby v2
+    Капча на Direct Auth решается через RuCaptcha (image captcha).
+    """
+    proxy = _normalize_proxy(proxy)
+    log: list[str] = []
+
+    if vk_token:
+        log.append(f"[v2] Using existing VK token: {vk_token[:30]}...")
+        access_token = vk_token
+    else:
+        log.append("[v2] No VK token, doing Direct Auth...")
+        da_result = _vk_direct_auth(login, password, rucaptcha_key, proxy)
+        log.extend(da_result.get("log", []))
+        if not da_result.get("ok"):
+            return {"ok": False, "error": da_result.get("error", "DirectAuth failed"), "log": log}
+        access_token = da_result["access_token"]
+
+    # Теперь отправляем токен на Twinby v2
+    log.append(f"[v2] Sending token to Twinby v2...")
+    tw_result = twinby_auth_v2(access_token, proxy)
+
+    if not tw_result.get("ok"):
+        log.append(f"[v2] Twinby v2 FAILED: {tw_result.get('error', '?')}")
+        return {"ok": False, "error": tw_result.get("error", "v2 failed"), "log": log}
+
+    log.append(f"[v2] Twinby JWT OK: {tw_result['accessToken'][:25]}...")
     return {
         "ok": True,
         "jwt": tw_result["accessToken"],

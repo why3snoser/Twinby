@@ -803,34 +803,62 @@ def _make_proxied_httpx_client(proxy: str = "", **extra) -> "httpx.Client":
 def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
                      rucaptcha_key: str = "", proxy: str = "") -> dict:
     """
-    Авторизация VK → Twinby JWT через v3 PKCE.
-    Требует vk_login + vk_pass. proxy — строка вида "http://user:pass@ip:port".
+    Авторизация VK → Twinby JWT.
+    Приоритет:
+      1. Если есть vk_token (vk1.a.) → Twinby v2 напрямую
+      2. Если есть login+pass → Direct Auth (oauth.vk.com) → Twinby v2
+      3. Фоллбэк на старый v3 PKCE (login+pass через VK ID)
 
     Returns: {"ok": True, "jwt": "...", "log": [...]}
              или {"ok": False, "error": "...", "log": [...]}
     """
     log = []
 
-    if not vk_login or not vk_pass:
-        return {"ok": False, "error": "Нужен VK логин и пароль (v3 PKCE)", "log": log}
-
-    log.append(f"[AUTH] v3 PKCE: login={vk_login[:4]}***")
-    if proxy:
-        log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
-
-    result = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key, proxy=proxy)
-    if result.get("ok"):
+    # --- Путь 1: VK token → Twinby v2 ---
+    if vk_token:
+        log.append(f"[AUTH] v2 (token): {vk_token[:30]}...")
+        if proxy:
+            log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
+        result = vk_auth.full_auth_v2("", "", rucaptcha_key, proxy=proxy, vk_token=vk_token)
         log.extend(result.get("log", []))
-        log.append(f"[AUTH] v3 OK: JWT={result['jwt'][:20]}...")
-        return {"ok": True, "jwt": result["jwt"], "log": log,
-                "refresh_token": result.get("refresh_token", "")}
-    else:
+        if result.get("ok"):
+            log.append(f"[AUTH] v2 (token) OK: JWT={result['jwt'][:20]}...")
+            return {"ok": True, "jwt": result["jwt"], "log": log,
+                    "refresh_token": result.get("refresh_token", "")}
+        else:
+            log.append(f"[AUTH] v2 (token) FAILED: {result.get('error')}")
+            # Не фоллбэчим — если токен не сработал, login+pass тоже не помогут
+
+    # --- Путь 2: login+pass → Direct Auth → Twinby v2 ---
+    if vk_login and vk_pass:
+        log.append(f"[AUTH] v2 (DirectAuth): login={vk_login[:4]}***")
+        if proxy:
+            log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
+        result = vk_auth.full_auth_v2(vk_login, vk_pass, rucaptcha_key, proxy=proxy)
         log.extend(result.get("log", []))
-        err = result.get("error", "unknown")
-        log.append(f"[AUTH] v3 FAILED: {err}")
-        if err == "need_captcha":
-            return result
-        return {"ok": False, "error": f"VK auth v3 failed: {err}", "log": log}
+        if result.get("ok"):
+            log.append(f"[AUTH] v2 (DirectAuth) OK: JWT={result['jwt'][:20]}...")
+            return {"ok": True, "jwt": result["jwt"], "log": log,
+                    "refresh_token": result.get("refresh_token", "")}
+        else:
+            v2_err = result.get("error", "unknown")
+            log.append(f"[AUTH] v2 (DirectAuth) FAILED: {v2_err}")
+            # Пробуем старый v3 PKCE как фоллбэк
+            log.append("[AUTH] Fallback → v3 PKCE...")
+            result3 = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key, proxy=proxy)
+            log.extend(result3.get("log", []))
+            if result3.get("ok"):
+                log.append(f"[AUTH] v3 OK: JWT={result3['jwt'][:20]}...")
+                return {"ok": True, "jwt": result3["jwt"], "log": log,
+                        "refresh_token": result3.get("refresh_token", "")}
+            else:
+                err3 = result3.get("error", "unknown")
+                log.append(f"[AUTH] v3 FAILED: {err3}")
+                return {"ok": False, "error": f"All auth methods failed. v2: {v2_err}; v3: {err3}", "log": log}
+
+    if not vk_login and not vk_token:
+        return {"ok": False, "error": "Нужен VK логин+пароль или VK токен", "log": log}
+    return {"ok": False, "error": "Нужен VK пароль для DirectAuth", "log": log}
 
 
 def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
@@ -3034,6 +3062,35 @@ def api_test_vk_auth():
     result = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
                              vk_token=vk_token, rucaptcha_key=rucaptcha_key,
                              proxy=proxy)
+    return jsonify(result)
+
+
+@app.route("/api/test-v2-auth", methods=["POST"])
+def api_test_v2_auth():
+    """Тест VK Direct Auth + Twinby v2.
+    JSON: {vk_id, vk_pass} и/или {vk_token}, опционально {proxy}
+    Если vk_token есть — сразу на v2.
+    Если нет — Direct Auth → v2."""
+    data = request.get_json(force=True)
+    vk_login = (data.get("vk_id") or "").strip()
+    vk_pass = (data.get("vk_pass") or "").strip()
+    vk_token = (data.get("vk_token") or "").strip()
+
+    settings = _load_settings()
+    rucaptcha_key = settings.get("rucaptcha_key", "")
+
+    if not vk_login and not vk_token:
+        return jsonify({"ok": False, "error": "Нужен vk_id+vk_pass или vk_token"})
+
+    proxy = (data.get("proxy") or "").strip() or _get_next_proxy(settings)
+
+    result = vk_auth.full_auth_v2(
+        login=vk_login,
+        password=vk_pass,
+        rucaptcha_key=rucaptcha_key,
+        proxy=proxy,
+        vk_token=vk_token,
+    )
     return jsonify(result)
 
 
