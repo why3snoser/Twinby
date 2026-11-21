@@ -2567,7 +2567,9 @@ def api_profile():
 # ---- Новый SPA-фронт ----
 @app.route("/spa")
 def spa_page():
-    return app.send_static_file("index.html")
+    """Отдаём index.html из корня проекта (не из static/)."""
+    from flask import send_from_directory
+    return send_from_directory(Path(__file__).parent, "index.html")
 
 
 if __name__ == "__main__":
