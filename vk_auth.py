@@ -481,6 +481,23 @@ def twinby_auth_v3(
 # Полный цикл: VK login → code → Twinby JWT
 # ---------------------------------------------------------------------------
 
+def _normalize_proxy(raw: str) -> str:
+    """ip:port:user:pass → http://user:pass@ip:port. Уже http:// — как есть."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://", "socks")):
+        return raw
+    parts = raw.split(":")
+    if len(parts) >= 4:
+        ip, port, user = parts[0], parts[1], parts[2]
+        pwd = ":".join(parts[3:])
+        return f"http://{user}:{pwd}@{ip}:{port}"
+    elif len(parts) == 2:
+        return f"http://{parts[0]}:{parts[1]}"
+    return raw
+
+
 def full_auth(login: str, password: str, rucaptcha_key: str = "", proxy: str = "") -> dict:
     """
     Полный цикл авторизации: VK login → code → Twinby JWT.
@@ -489,6 +506,7 @@ def full_auth(login: str, password: str, rucaptcha_key: str = "", proxy: str = "
         dict: {"ok": True, "jwt": "...", "log": [...]}
               или {"ok": False, "error": "...", "log": [...]}
     """
+    proxy = _normalize_proxy(proxy)
     # Шаг 1: получить VK auth code
     vk_result = get_vk_auth_code(login, password, rucaptcha_key, proxy=proxy)
     if not vk_result.get("ok"):

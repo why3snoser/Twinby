@@ -769,9 +769,27 @@ def _get_next_proxy(settings: dict | None = None) -> str:
     return proxy
 
 
+def _normalize_proxy(raw: str) -> str:
+    """Если прокси уже http://... — вернуть как есть. Иначе парсить ip:port:user:pass."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw.startswith("http://") or raw.startswith("https://") or raw.startswith("socks"):
+        return raw
+    parts = raw.split(":")
+    if len(parts) >= 4:
+        ip, port, user = parts[0], parts[1], parts[2]
+        pwd = ":".join(parts[3:])
+        return f"http://{user}:{pwd}@{ip}:{port}"
+    elif len(parts) == 2:
+        return f"http://{parts[0]}:{parts[1]}"
+    return raw
+
+
 def _make_proxied_httpx_client(proxy: str = "", **extra) -> "httpx.Client":
     """Создаёт httpx.Client с прокси (если задан) и стандартными заголовками Twinby."""
     import httpx as _httpx
+    proxy = _normalize_proxy(proxy)
     kw: dict = {
         "timeout": 30,
         "headers": {"User-Agent": tw.UA, "Accept": "application/json"},
@@ -1575,6 +1593,7 @@ def _make_web_client(token: str, dry: bool, tee, proxy: str = ""):
         raise RuntimeError("В поле токена попал лишний хвост (refreshToken). Вставь только первый JWT.")
     c = WebClient(dry)
     # Если нужен прокси — пересоздаём httpx.Client с proxy
+    proxy = _normalize_proxy(proxy)
     if proxy:
         import httpx as _httpx
         c.http = _httpx.Client(
