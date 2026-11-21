@@ -2802,5 +2802,28 @@ def api_check_status():
         return jsonify({"ok": False, "error": str(e)})
 
 
+@app.route("/api/rucaptcha-balance", methods=["POST"])
+def api_rucaptcha_balance():
+    """Проверка баланса RuCaptcha. JSON: {key}."""
+    import httpx
+    data = request.get_json(force=True)
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "Нет API ключа"})
+
+    try:
+        resp = httpx.get(
+            f"https://rucaptcha.com/res.php?key={key}&action=getbalance&json=1",
+            timeout=10,
+        )
+        d = resp.json()
+        if d.get("status") == 1:
+            return jsonify({"ok": True, "balance": d.get("request", "?")})
+        else:
+            return jsonify({"ok": False, "error": d.get("request", "Неизвестная ошибка")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
