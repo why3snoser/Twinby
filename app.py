@@ -1443,8 +1443,6 @@ def accounts_page():
     return _render(PAGE_ACCOUNTS, "accounts", log_buf, error, f={})
 
 
-# ---- Вкладка: Свайпы ----
-@app.route("/swipe", methods=["GET", "POST"])
 def _parse_feed(result) -> list[dict]:
     """Парсит ответ /api/dating/search/ в унифицированный список."""
     items = []
@@ -1472,6 +1470,8 @@ def _parse_feed(result) -> list[dict]:
     return items
 
 
+# ---- Вкладка: Свайпы ----
+@app.route("/swipe", methods=["GET", "POST"])
 def swipe_page():
     import random
     f = dict(DEFAULTS)
