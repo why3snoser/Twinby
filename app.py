@@ -1805,16 +1805,15 @@ def index():
                 tee("interviews: " + json.dumps(c.call("GET", tw.API["interviews"]), ensure_ascii=False)[:1500])
                 return _render(PAGE_MAIN, "main", log_buf, error="Укажи target_id и interview_id из списков выше и запусти снова.", f=f)
 
+            # -- Онбординг: точная копия реального трафика (mitmproxy 2026-11-21) --
             c.call("POST", tw.API["agreement"])
-            c.call("PATCH", tw.API["me"], json={"name": f["name"], "language": "RU"})
-            c.call("PATCH", tw.API["me"], json={"birthday": birthday_iso})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 1})
-            c.call("PATCH", tw.API["filter"], json=tw.FILTER_DEFAULT)
-            c.call("PATCH", tw.API["me"], json={"gender": f["gender"]})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 2})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 3})
-            c.call("PATCH", tw.API["me"], json={"targetId": f["target_id"]})
-            c.call("PATCH", tw.API["me"], json={"onboardingStep": 4})
+            birthday_app = birthday_iso + "T00:00:00.000" if "T" not in birthday_iso else birthday_iso
+
+            c.call("PATCH", tw.API["me"], json={"name": f["name"], "onboardingStep": 1})
+            c.call("PATCH", tw.API["me"], json={"birthday": birthday_app, "onboardingStep": 2})
+            c.call("PATCH", tw.API["me"], json={"gender": f["gender"], "onboardingStep": 3})
+            c.call("PATCH", tw.API["me"], json={"targetId": f["target_id"], "onboardingStep": 4})
+
             c.call("POST", tw.API["photo"], data={"order": PHOTO_ORDER},
                    files={"file": (photo_name, photo_bytes, mime)})
             c.call("PATCH", tw.API["me"], json={"onboardingStep": 5})
@@ -2660,38 +2659,38 @@ def api_register_account():
                     tee(f"  WARN: {desc} -> {ex}")
                     return None
 
+            # -- Онбординг: точная копия реального трафика приложения (mitmproxy 2026-11-21) --
             safe_call("agreement", "POST", tw.API["agreement"])
-            safe_call("name", "PATCH", tw.API["me"], json={"name": name, "language": "RU"})
-            safe_call("birthday", "PATCH", tw.API["me"], json={"birthday": birthday_iso})
-            safe_call("onboardingStep=1", "PATCH", tw.API["me"], json={"onboardingStep": 1})
-            safe_call("filter_default", "PATCH", tw.API["filter"], json=tw.FILTER_DEFAULT)
-            safe_call("gender", "PATCH", tw.API["me"], json={"gender": gender})
-            safe_call("onboardingStep=2", "PATCH", tw.API["me"], json={"onboardingStep": 2})
-            safe_call("onboardingStep=3", "PATCH", tw.API["me"], json={"onboardingStep": 3})
 
-            # target + interview
+            # Формат даты как в приложении: "2002-03-22T00:00:00.000"
+            birthday_app = birthday_iso + "T00:00:00.000" if "T" not in birthday_iso else birthday_iso
+
+            # Шаг 1: имя + шаг в ОДНОМ запросе
+            safe_call("name+step1", "PATCH", tw.API["me"], json={"name": name, "onboardingStep": 1})
+
+            # Шаг 2: дата рождения + шаг
+            safe_call("birthday+step2", "PATCH", tw.API["me"], json={"birthday": birthday_app, "onboardingStep": 2})
+
+            # Шаг 3: пол + шаг
+            safe_call("gender+step3", "PATCH", tw.API["me"], json={"gender": gender, "onboardingStep": 3})
+
+            # Шаг 4: цель (targetId) + шаг
+            target_id = "887657566886395905"  # "like" — дефолт из приложения
             try:
                 targets = c.call("GET", tw.API["targets"])
                 if isinstance(targets, list) and targets:
-                    safe_call("targetId", "PATCH", tw.API["me"], json={"targetId": targets[0].get("id", "")})
+                    target_id = targets[0].get("id", target_id)
             except Exception:
-                tee("  WARN: targets fetch failed")
+                tee("  WARN: targets fetch failed, using default")
+            safe_call("target+step4", "PATCH", tw.API["me"], json={"targetId": target_id, "onboardingStep": 4})
 
-            safe_call("onboardingStep=4", "PATCH", tw.API["me"], json={"onboardingStep": 4})
-            safe_call("onboardingStep=5", "PATCH", tw.API["me"], json={"onboardingStep": 5})
-            safe_call("onboardingStep=6", "PATCH", tw.API["me"], json={"onboardingStep": 6})
+            # Шаг 5: фото (загружается отдельно, тут только шаг)
+            safe_call("step5", "PATCH", tw.API["me"], json={"onboardingStep": 5})
 
-            try:
-                interviews = c.call("GET", tw.API["interviews"])
-                if isinstance(interviews, list) and interviews:
-                    iid = interviews[0].get("id", "")
-                    qs = c.call("GET", tw.API["questions"].format(iid=iid))
-                    if isinstance(qs, list) and qs:
-                        safe_call("answers", "POST", tw.API["answers"],
-                               json={"test": [{"question": q["id"], "answer": 4} for q in qs]})
-            except Exception:
-                tee("  WARN: interviews failed")
+            # Шаг 6
+            safe_call("step6", "PATCH", tw.API["me"], json={"onboardingStep": 6})
 
+            # Завершение
             safe_call("onboardingCompleted", "PATCH", tw.API["me"], json={"onboardingCompleted": True})
 
         # 3) Профиль
