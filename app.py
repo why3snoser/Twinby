@@ -2018,6 +2018,67 @@ def save_presets():
     return jsonify({"ok": True})
 
 
+@app.route("/preset-register", methods=["POST"])
+def preset_register():
+    """Зарегать анкету через VK токен, вернуть JWT + user info."""
+    import httpx
+    data = request.get_json(force=True)
+    vk_token = (data.get("vk_token") or "").strip()
+    if not vk_token:
+        return jsonify({"ok": False, "error": "Нет VK токена"})
+
+    try:
+        resp = httpx.post(
+            f"{tw.BASE}{AUTH_VK_PATH}",
+            json={"provider": "vk", "token": vk_token},
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"ok": False, "error": f"Статус {resp.status_code}: {resp.text[:300]}"})
+        rd = resp.json()
+        jwt_token = rd.get("accessToken", "")
+        if not jwt_token:
+            return jsonify({"ok": False, "error": f"Нет accessToken: {json.dumps(rd, ensure_ascii=False)[:300]}"})
+
+        # Получим имя и ID
+        user_name = ""
+        user_id = ""
+        try:
+            me_resp = httpx.get(
+                f"{tw.BASE}{tw.API['me']}",
+                headers={"User-Agent": tw.UA, "Accept": "application/json",
+                         "Authorization": f"JWT {jwt_token}"},
+                timeout=15,
+            )
+            if me_resp.status_code < 400:
+                me = me_resp.json()
+                user_name = me.get("name", "")
+                user_id = str(me.get("id", ""))
+        except Exception:
+            pass
+
+        # Если переданы координаты — сразу ставим локацию
+        lat_s = str(data.get("latitude", "")).strip()
+        lon_s = str(data.get("longitude", "")).strip()
+        if lat_s and lon_s:
+            try:
+                httpx.patch(
+                    f"{tw.BASE}/api/users/me/",
+                    headers={"User-Agent": tw.UA, "Authorization": f"JWT {jwt_token}",
+                             "Content-Type": "application/json"},
+                    json={"location": f"POINT({lat_s} {lon_s})"},
+                    timeout=15,
+                )
+            except Exception:
+                pass
+
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 @app.route("/apply-preset", methods=["POST"])
 def apply_preset():
     """Применить пресет: location + city + filter через Flask-прокси (обход CORS)."""
@@ -2072,20 +2133,27 @@ def apply_preset():
 
 
 # ---- Вкладка: Пресеты ----
-PAGE_PRESETS = """
+PAGE_PRESETS = r"""
 <h2>Пресеты</h2>
-<p class="hint">Пресет = набор настроек для анкеты (город, координаты, фильтры, привязанный аккаунт, фото).
-  Создай пресет, привяжи аккаунт и настрой — все данные сохраняются на сервере.</p>
+<p class="hint">Пресет = персона (имя + возраст + пометка). Внутри — анкеты по городам.
+  Каждая анкета регистрируется через VK и получает свой JWT. Клик по анкете — детали + действия.</p>
 
-<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-  <input type="text" id="newPresetName" placeholder="Имя пресета" style="flex:1;min-width:200px">
-  <button class="go" onclick="createPreset()">+ Создать пресет</button>
+<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:end">
+  <div style="flex:1;min-width:140px"><label class="l">Имя пресета</label>
+    <input type="text" id="newPresetName" placeholder="Артём, 25 (визи)"></div>
+  <div style="min-width:200px"><label class="l">VK данные <span class="hint">(id:pass:token)</span></label>
+    <input type="text" id="newPresetVk" placeholder="48450464782:pass:vk1.a.SQV..."></div>
+  <button class="go" style="margin-top:0;height:38px" onclick="createPreset()">+ Создать пресет</button>
 </div>
 
 <div id="presetsList"></div>
+<div id="presetDetail" style="display:none"></div>
+<div id="presetLog" style="margin-top:12px"></div>
 
 <script>
 let PRESETS={};
+let OPEN_PRESET=null;
+let OPEN_ANKETA=null;
 
 function loadPresets(){
   fetch('/api/presets').then(r=>r.json()).then(data=>{
@@ -2099,72 +2167,215 @@ function savePresets(cb){
   .then(r=>r.json()).then(d=>{if(cb)cb();});
 }
 
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
 function createPreset(){
   const name=document.getElementById('newPresetName').value.trim();
-  if(!name){alert('Введи имя');return;}
-  if(PRESETS[name]){alert('Уже существует');return;}
-  PRESETS[name]={account:'',city_name:'',latitude:'',longitude:'',distance:100,
-    min_age:18,max_age:35,filter_gender:'f',photos:[],videos:[]};
+  const vk=document.getElementById('newPresetVk').value.trim();
+  if(!name){alert('Введи имя пресета');return;}
+  if(PRESETS[name]){alert('Пресет с таким именем уже есть');return;}
+  let vk_id='',vk_pass='',vk_token='';
+  if(vk){
+    const parts=vk.split(':');
+    if(parts.length>=3){vk_id=parts[0];vk_pass=parts[1];vk_token=parts.slice(2).join(':');}
+    else if(parts.length==2){vk_id=parts[0];vk_token=parts[1];}
+    else{vk_token=vk;}
+  }
+  PRESETS[name]={vk_id:vk_id,vk_pass:vk_pass,vk_token:vk_token,ankety:{}};
   savePresets(renderPresets);
   document.getElementById('newPresetName').value='';
+  document.getElementById('newPresetVk').value='';
 }
 
 function deletePreset(name){
-  if(!confirm('Удалить пресет "'+name+'"?')) return;
+  if(!confirm('Удалить пресет "'+name+'" со всеми анкетами?'))return;
   delete PRESETS[name];
+  if(OPEN_PRESET===name){OPEN_PRESET=null;OPEN_ANKETA=null;document.getElementById('presetDetail').style.display='none';}
   savePresets(renderPresets);
 }
 
-function updatePreset(name,field,value){
-  if(!PRESETS[name]) return;
-  PRESETS[name][field]=value;
-  savePresets();
+function openPreset(name){
+  OPEN_PRESET=name;OPEN_ANKETA=null;
+  renderPresetDetail();
 }
 
 function renderPresets(){
   const box=document.getElementById('presetsList');
-  const accounts=window._ACCOUNTS||{};
-  const accOptions=Object.keys(accounts).map(k=>'<option value="'+k+'">'+k+' ('+( accounts[k].name||'')+')</option>').join('');
-
-  box.innerHTML=Object.entries(PRESETS).map(([name,p])=>{
-    return '<fieldset style="margin-bottom:16px"><legend>'+name+' <span style="cursor:pointer;color:#f66;font-size:13px" onclick="deletePreset(\''+name.replace(/'/g,"\\'")+'\')">удалить</span></legend>'
-    +'<div class="row"><div style="flex:1"><label class="l">Аккаунт</label>'
-    +'<select onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'account\',this.value)">'
-    +'<option value="">— не привязан —</option>'+accOptions.replace('value="'+( p.account||'')+'"','value="'+(p.account||'')+'" selected')
-    +'</select></div></div>'
-    +'<div class="row" style="margin-top:6px">'
-    +'<div><label class="l">Город</label><input type="text" value="'+(p.city_name||'')+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'city_name\',this.value)" placeholder="Москва"></div>'
-    +'<div><label class="l">Широта</label><input type="text" value="'+(p.latitude||'')+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'latitude\',this.value)" placeholder="55.7558" style="max-width:120px"></div>'
-    +'<div><label class="l">Долгота</label><input type="text" value="'+(p.longitude||'')+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'longitude\',this.value)" placeholder="37.6173" style="max-width:120px"></div>'
-    +'<div><label class="l">Радиус</label><input type="number" value="'+(p.distance||100)+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'distance\',parseInt(this.value))" style="max-width:80px"></div>'
-    +'</div>'
-    +'<div class="row" style="margin-top:6px">'
-    +'<div><label class="l">Возраст от</label><input type="number" value="'+(p.min_age||18)+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'min_age\',parseInt(this.value))" style="max-width:80px"></div>'
-    +'<div><label class="l">до</label><input type="number" value="'+(p.max_age||35)+'" onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'max_age\',parseInt(this.value))" style="max-width:80px"></div>'
-    +'<div><label class="l">Пол</label><select onchange="updatePreset(\''+name.replace(/'/g,"\\'")+'\',\'filter_gender\',this.value)">'
-    +'<option value="f"'+(p.filter_gender=='f'?' selected':'')+'>Девушки</option>'
-    +'<option value="m"'+(p.filter_gender=='m'?' selected':'')+'>Парни</option>'
-    +'<option value="n"'+(p.filter_gender=='n'?' selected':'')+'>Все</option></select></div>'
-    +'</div>'
-    +'<div style="margin-top:8px"><button class="go alt" onclick="applyPreset(\''+name.replace(/'/g,"\\'")+'\')">Применить пресет (установить фильтр + локацию)</button></div>'
-    +'</fieldset>';
-  }).join('');
+  let html='';
+  for(const[name,p]of Object.entries(PRESETS)){
+    const anketaCount=Object.keys(p.ankety||{}).length;
+    const cls=OPEN_PRESET===name?'border-color:#3a7':'';
+    html+='<div class="acct-card" style="cursor:pointer;'+cls+'" onclick="openPreset(\''+esc(name)+'\')">'
+      +'<div class="info"><b>'+esc(name)+'</b>'
+      +'<br><span style="font-size:12px;color:#888">VK: '+(p.vk_id?esc(p.vk_id):'не задан')
+      +' · Анкет: '+anketaCount+'</span></div>'
+      +'<div style="display:flex;gap:6px;align-items:center">'
+      +'<button class="copy-btn" onclick="event.stopPropagation();deletePreset(\''+esc(name)+'\')" style="color:#f55;border-color:#a33">X</button>'
+      +'</div></div>';
+  }
+  if(!html) html='<p class="hint">Нет пресетов. Создай первый.</p>';
+  box.innerHTML=html;
+  if(OPEN_PRESET && PRESETS[OPEN_PRESET]) renderPresetDetail();
+  else document.getElementById('presetDetail').style.display='none';
 }
 
-function applyPreset(name){
-  const p=PRESETS[name]; if(!p) return;
-  const acc=window._ACCOUNTS[p.account];
-  if(!acc||!acc.jwt){alert('Привяжи аккаунт к пресету');return;}
-  const log=document.getElementById('presetLog')||document.createElement('div');
-  log.id='presetLog'; log.style.cssText='margin-top:12px;padding:8px;background:#1a1a1a;border-radius:6px;font-size:13px';
-  if(!document.getElementById('presetLog')) document.getElementById('presetsList').after(log);
-  log.innerText='Применяю пресет "'+name+'"...';
+function renderPresetDetail(){
+  const d=document.getElementById('presetDetail');
+  if(!OPEN_PRESET||!PRESETS[OPEN_PRESET]){d.style.display='none';return;}
+  d.style.display='block';
+  const p=PRESETS[OPEN_PRESET];
+  const ankety=p.ankety||{};
 
-  fetch('/apply-preset',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({token:acc.jwt,preset:p})})
+  let html='<fieldset><legend>'+esc(OPEN_PRESET)+'</legend>';
+  html+='<div class="row"><div><label class="l">VK ID</label><input type="text" value="'+esc(p.vk_id)+'" onchange="updP(\'vk_id\',this.value)"></div>'
+    +'<div><label class="l">VK пароль</label><input type="text" value="'+esc(p.vk_pass)+'" onchange="updP(\'vk_pass\',this.value)"></div>'
+    +'<div style="flex:2"><label class="l">VK токен</label><input type="text" value="'+esc(p.vk_token)+'" onchange="updP(\'vk_token\',this.value)"></div></div>';
+
+  // --- список анкет ---
+  html+='<h4 style="margin-top:16px">Анкеты ('+Object.keys(ankety).length+')</h4>';
+  for(const[city,a]of Object.entries(ankety)){
+    const sel=OPEN_ANKETA===city?'background:#222;border-color:#3a7':'';
+    const likes=a.likes_done||0;
+    html+='<div class="acct-card" style="cursor:pointer;margin-top:6px;'+sel+'" onclick="openAnketa(\''+esc(city)+'\')">'
+      +'<div class="info"><b>'+esc(city)+'</b>'
+      +'<br><span style="font-size:12px;color:#888">'
+      +(a.name?esc(a.name)+' · ':'')
+      +'лайков: '+likes
+      +(a.jwt?' · JWT: '+esc(a.jwt.substring(0,30))+'...':'')
+      +'</span></div>'
+      +'<button class="copy-btn" onclick="event.stopPropagation();deleteAnketa(\''+esc(city)+'\')" style="color:#f55;border-color:#a33">X</button>'
+      +'</div>';
+  }
+
+  // --- добавить анкету ---
+  html+='<div style="display:flex;gap:8px;margin-top:10px;align-items:end">'
+    +'<div style="flex:1"><label class="l">Город для новой анкеты</label><input type="text" id="newAnketaCity" placeholder="Москва"></div>'
+    +'<div><label class="l">Широта</label><input type="text" id="newAnketaLat" placeholder="55.7558" style="max-width:100px"></div>'
+    +'<div><label class="l">Долгота</label><input type="text" id="newAnketaLon" placeholder="37.6173" style="max-width:100px"></div>'
+    +'<button class="go" style="margin-top:0;height:38px" onclick="addAnketa()">+ Анкета</button></div>';
+
+  // --- кнопка регистрации всех ---
+  if(Object.keys(ankety).length>0){
+    html+='<div style="margin-top:12px;display:flex;gap:8px">'
+      +'<button class="go" onclick="registerAllAnkety()">Зарегать все анкеты (VK→JWT)</button>'
+      +'</div>';
+  }
+
+  html+='</fieldset>';
+
+  // --- деталь открытой анкеты ---
+  if(OPEN_ANKETA && ankety[OPEN_ANKETA]){
+    const a=ankety[OPEN_ANKETA];
+    html+='<fieldset style="margin-top:12px"><legend>Анкета: '+esc(OPEN_ANKETA)+'</legend>';
+    html+='<div class="row">'
+      +'<div><label class="l">JWT</label><textarea style="min-height:50px;font-size:11px" readonly>'+esc(a.jwt||'не получен')+'</textarea>'
+      +'<button class="copy-btn" style="margin-top:4px" onclick="navigator.clipboard.writeText(\''+esc(a.jwt||'')+'\')">Copy JWT</button></div></div>';
+    html+='<div class="row" style="margin-top:8px">'
+      +'<div><label class="l">VK ID</label><input type="text" value="'+esc(p.vk_id)+'" readonly></div>'
+      +'<div><label class="l">VK пароль</label><input type="text" value="'+esc(p.vk_pass)+'" readonly></div>'
+      +'<div><label class="l">User ID (twinby)</label><input type="text" value="'+esc(a.user_id||'')+'" readonly></div></div>';
+    html+='<div class="row" style="margin-top:8px">'
+      +'<div><label class="l">Имя в анкете</label><input type="text" value="'+esc(a.name||'')+'" readonly></div>'
+      +'<div><label class="l">Город</label><input type="text" value="'+esc(OPEN_ANKETA)+'" readonly></div>'
+      +'<div><label class="l">Лайков</label><input type="text" value="'+(a.likes_done||0)+'" readonly></div></div>';
+    html+='<div class="row" style="margin-top:8px">'
+      +'<div><label class="l">Координаты</label><input type="text" value="'+esc((a.latitude||'')+', '+(a.longitude||''))+'" readonly></div>'
+      +'<div><label class="l">Радиус</label><input type="number" value="'+(a.distance||100)+'" onchange="updA(\'distance\',parseInt(this.value))"></div>'
+      +'<div><label class="l">Возраст</label><div style="display:flex;gap:4px"><input type="number" value="'+(a.min_age||18)+'" onchange="updA(\'min_age\',parseInt(this.value))" style="width:60px"><span style="color:#666;padding-top:8px">-</span><input type="number" value="'+(a.max_age||35)+'" onchange="updA(\'max_age\',parseInt(this.value))" style="width:60px"></div></div>'
+      +'<div><label class="l">Пол</label><select onchange="updA(\'filter_gender\',this.value)">'
+      +'<option value="f"'+(a.filter_gender==="f"?' selected':'')+'>Девушки</option>'
+      +'<option value="m"'+(a.filter_gender==="m"?' selected':'')+'>Парни</option>'
+      +'<option value="n"'+(a.filter_gender==="n"?' selected':'')+'>Все</option></select></div></div>';
+
+    html+='<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
+      +'<button class="go alt" onclick="applyAnketa()">Применить (локация + фильтр)</button>'
+      +'<button class="go alt" onclick="registerAnketa(\''+esc(OPEN_ANKETA)+'\')">Зарегать / обновить JWT</button>'
+      +'</div>';
+    html+='</fieldset>';
+  }
+
+  d.innerHTML=html;
+}
+
+function updP(field,value){
+  if(!OPEN_PRESET||!PRESETS[OPEN_PRESET])return;
+  PRESETS[OPEN_PRESET][field]=value;
+  savePresets();
+}
+
+function updA(field,value){
+  if(!OPEN_PRESET||!OPEN_ANKETA||!PRESETS[OPEN_PRESET])return;
+  const a=PRESETS[OPEN_PRESET].ankety;
+  if(!a[OPEN_ANKETA])return;
+  a[OPEN_ANKETA][field]=value;
+  savePresets();
+}
+
+function addAnketa(){
+  if(!OPEN_PRESET||!PRESETS[OPEN_PRESET])return;
+  const city=document.getElementById('newAnketaCity').value.trim();
+  const lat=document.getElementById('newAnketaLat').value.trim();
+  const lon=document.getElementById('newAnketaLon').value.trim();
+  if(!city){alert('Введи город');return;}
+  if(!PRESETS[OPEN_PRESET].ankety) PRESETS[OPEN_PRESET].ankety={};
+  if(PRESETS[OPEN_PRESET].ankety[city]){alert('Анкета в '+city+' уже есть');return;}
+  PRESETS[OPEN_PRESET].ankety[city]={jwt:'',user_id:'',name:'',
+    latitude:lat,longitude:lon,distance:100,min_age:18,max_age:35,filter_gender:'f',
+    likes_done:0};
+  savePresets(renderPresetDetail);
+  document.getElementById('newAnketaCity').value='';
+}
+
+function deleteAnketa(city){
+  if(!confirm('Удалить анкету "'+city+'"?'))return;
+  delete PRESETS[OPEN_PRESET].ankety[city];
+  if(OPEN_ANKETA===city)OPEN_ANKETA=null;
+  savePresets(renderPresetDetail);
+}
+
+function openAnketa(city){OPEN_ANKETA=city;renderPresetDetail();}
+
+function logMsg(msg){
+  const el=document.getElementById('presetLog');
+  el.style.cssText='padding:8px;background:#1a1a1a;border-radius:6px;font-size:13px;white-space:pre-wrap';
+  el.innerText+=(el.innerText?'\n':'')+msg;
+}
+
+function registerAnketa(city){
+  const p=PRESETS[OPEN_PRESET];
+  if(!p||!p.vk_token){alert('Укажи VK токен в пресете');return;}
+  logMsg('Регистрирую анкету '+city+'...');
+  fetch('/preset-register',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({vk_token:p.vk_token,city:city,
+      latitude:(p.ankety[city]||{}).latitude||'',
+      longitude:(p.ankety[city]||{}).longitude||''})})
   .then(r=>r.json()).then(d=>{
-    log.innerText+='\\n'+(d.log||'done');
-  }).catch(e=>{log.innerText+='\\nОшибка: '+e;});
+    if(d.ok){
+      const a=PRESETS[OPEN_PRESET].ankety[city];
+      a.jwt=d.jwt||'';a.user_id=d.user_id||'';a.name=d.name||'';
+      savePresets(renderPresetDetail);
+      logMsg(city+': JWT получен ('+d.user_id+' '+d.name+')');
+    }else{logMsg(city+': ошибка — '+(d.error||'unknown'));}
+  }).catch(e=>logMsg(city+': fetch error — '+e));
+}
+
+function registerAllAnkety(){
+  const p=PRESETS[OPEN_PRESET];
+  if(!p)return;
+  for(const city of Object.keys(p.ankety||{})){
+    registerAnketa(city);
+  }
+}
+
+function applyAnketa(){
+  if(!OPEN_PRESET||!OPEN_ANKETA)return;
+  const a=PRESETS[OPEN_PRESET].ankety[OPEN_ANKETA];
+  if(!a||!a.jwt){alert('Сначала зарегай анкету (получи JWT)');return;}
+  logMsg('Применяю '+OPEN_ANKETA+'...');
+  fetch('/apply-preset',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({token:a.jwt,preset:a})})
+  .then(r=>r.json()).then(d=>{logMsg(OPEN_ANKETA+': '+(d.log||'done'));})
+  .catch(e=>logMsg(OPEN_ANKETA+': '+e));
 }
 
 document.addEventListener('DOMContentLoaded',loadPresets);
