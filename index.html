@@ -307,7 +307,13 @@ function switchTab(name) {
   const idx = {settings:0, presets:1, accounts:2}[name] || 0;
   document.querySelectorAll('.tabs button')[idx].classList.add('active');
   if (name === 'presets') { loadPresets(); }
-  if (name === 'accounts') { loadPresets(); setTimeout(renderAccounts, 150); }
+  if (name === 'accounts') {
+    fetch('/api/presets').then(r=>r.json()).then(data => {
+      PRESETS = data||{};
+      rebuildAll();
+      renderAccounts(true);
+    }).catch(()=>{});
+  }
 }
 
 /* ===================== SETTINGS ===================== */
@@ -503,6 +509,10 @@ function rebuildAll() {
   }
   updateVkStats();
   updateDash();
+  // Auto-refresh accounts tab if visible
+  if (document.getElementById('tab-accounts')?.classList.contains('active')) {
+    renderAccounts(true);
+  }
 }
 
 function updateDash() {
@@ -780,8 +790,8 @@ async function checkStatusPreset(presetName) {
 }
 
 /* ===================== ACCOUNTS TAB ===================== */
-function renderAccounts() {
-  rebuildAll();
+function renderAccounts(skipRebuild) {
+  if (!skipRebuild) rebuildAll();
   const search = (document.getElementById('accSearch')?.value||'').toLowerCase();
   const sf = document.getElementById('accFilterStatus')?.value||'';
   let list = ALL_ACCOUNTS;
@@ -795,19 +805,38 @@ function renderAccounts() {
   const box = document.getElementById('accountsList');
   if (!list.length) { box.innerHTML='<div class="text-sm text-muted">Нет аккаунтов</div>'; box._data=[]; return; }
   box._data = list;
-  box.innerHTML = list.map((a,i) => {
-    const vb = a.verified ? '<span class="badge ok">✓</span>' : '<span class="badge warn">⚠️</span>';
-    const pb = a.premium ? '<span class="badge info">💎</span>' : '';
-    return `<div class="card" style="padding:8px;cursor:pointer" onclick="showAccDetail(${i})">
-      <div class="flex flex-wrap">
-        <span>${esc(a.city||'?')}</span>
-        <span class="text-sm text-muted">${esc(a.preset)}</span>
+
+  // Group by preset
+  const groups = {};
+  for (const a of list) {
+    const p = a.preset || '—';
+    if (!groups[p]) groups[p] = [];
+    groups[p].push(a);
+  }
+
+  let html = '';
+  let globalIdx = 0;
+  for (const [presetName, accs] of Object.entries(groups)) {
+    const pv = accs.filter(a=>a.verified).length;
+    const pp = accs.filter(a=>a.premium).length;
+    html += `<div style="margin-top:16px;margin-bottom:8px;padding:6px 12px;background:var(--bg3);border-radius:var(--radius);border-left:3px solid var(--accent)">
+      <span style="font-weight:600;color:var(--accent)">${esc(presetName)}</span>
+      <span class="text-sm text-muted" style="margin-left:10px">${accs.length} акк. | ✓${pv} | 💎${pp}</span>
+    </div>`;
+    for (const a of accs) {
+      const idx = globalIdx++;
+      const vb = a.verified ? '<span class="badge ok">✓</span>' : '<span class="badge warn">⚠️</span>';
+      const pb = a.premium ? '<span class="badge info">💎</span>' : '';
+      html += `<div class="acc-btn" onclick="showAccDetail(${idx})" style="display:flex;align-items:center;gap:8px;padding:10px 14px;margin:4px 0;border:1px solid var(--fg3);border-radius:var(--radius);cursor:pointer;background:var(--bg2);transition:.15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--fg3)'">
+        <span style="font-weight:600;min-width:120px">${esc(a.city||'?')}</span>
         <span class="text-sm text-muted">${esc(a.name||'')}</span>
+        ${a.vk_id?'<span class="text-sm text-muted">VK:'+esc(a.vk_id)+'</span>':''}
         ${vb}${pb}
         <span class="text-sm text-muted grow text-right">❤ ${a.likes_done||0}</span>
-      </div>
-    </div>`;
-  }).join('');
+      </div>`;
+    }
+  }
+  box.innerHTML = html;
 }
 
 function showAccDetail(idx) {
