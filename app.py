@@ -704,7 +704,7 @@ LANGUAGES = [["753298335899156481", "Азербайджанский"], ["7532983
 # -----------------------------------------------------------------------------------------------
 
 AUTH_VK_PATH = "/api/auth/v2/oauth/by-token"   # прямой VK access token → JWT
-DATING_SEARCH_PATH = "/api/dating/search/"       # GET → список анкет для свайпа
+DATING_SEARCH_PATH = "/api/users/search/?size=50"  # GET → список анкет для свайпа (confirmed via mitmproxy)
 USERS_PUBLIC_PATH = "/api/users/{uid}/"           # GET → публичный профиль по ID
 
 # Хранилище аккаунтов в памяти (сбрасывается при рестарте). Формат: {label: {vk_token, jwt, user_id, name}}
@@ -1020,7 +1020,7 @@ PAGE_SWIPE = """
 <div class="swipe-card" style="text-align:left;display:flex;gap:16px;align-items:center">
   {% if u.photo %}<img src="{{ u.photo }}" alt="photo" style="max-width:80px;max-height:100px;border-radius:6px">{% endif %}
   <div style="flex:1">
-    <div class="name">{{ u.name or '—' }}, {{ u.age or '?' }}</div>
+    <div class="name">{{ u.name or '—' }}, {{ u.age or '?' }}{% if u.compatibility %} · {{ u.compatibility }}%{% endif %}</div>
     <div class="meta">id: {{ u.id }}{% if u.city %} · {{ u.city }}{% endif %}</div>
   </div>
   <form method="post" action="/swipe" style="display:flex;gap:6px;margin:0">
@@ -1444,7 +1444,10 @@ def accounts_page():
 
 
 def _parse_feed(result) -> list[dict]:
-    """Парсит ответ /api/dating/search/ в унифицированный список."""
+    """Парсит ответ /api/users/search/?size=50 в унифицированный список.
+    Формат подтверждён mitmproxy 2026-11-21:
+      {"results": [{"id","name","ages","nameCity","avatar":{"preview":url},...}]}
+    """
     items = []
     if isinstance(result, list):
         raw = result
@@ -1460,13 +1463,24 @@ def _parse_feed(result) -> list[dict]:
         if not uid:
             continue
         name = u.get("name", "")
-        age = u.get("age", "")
+        age = u.get("ages", u.get("age", ""))  # API отдаёт "ages"
         city = u.get("nameCity", u.get("city", ""))
-        photos = u.get("photos", [])
+        compat = u.get("compatibility", "")
+
+        # Аватар: avatar.preview (основная), fallback на photos[0]
         photo_url = ""
-        if photos and isinstance(photos, list) and isinstance(photos[0], dict):
-            photo_url = photos[0].get("url", photos[0].get("src", ""))
-        items.append({"id": uid, "name": name, "age": age, "city": city, "photo": photo_url})
+        avatar = u.get("avatar")
+        if isinstance(avatar, dict):
+            photo_url = avatar.get("preview", avatar.get("file", ""))
+        if not photo_url:
+            photos = u.get("photos", [])
+            if photos and isinstance(photos, list) and isinstance(photos[0], dict):
+                photo_url = photos[0].get("url", photos[0].get("src", ""))
+
+        items.append({
+            "id": uid, "name": name, "age": age, "city": city,
+            "photo": photo_url, "compatibility": compat,
+        })
     return items
 
 
