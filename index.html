@@ -662,7 +662,7 @@ function applyFilter(preset, idx) {
       distance:SETTINGS.distance||100, min_age:SETTINGS.min_age||18,
       max_age:SETTINGS.max_age||35, filter_gender:SETTINGS.filter_gender||'f'
     }})
-  }).then(r=>r.json()).then(d=>logMsg((acc.city||'')+': '+(d.log||d.error||'done')))
+  }).then(r=>r.json()).then(d=>{const msg=Array.isArray(d.log)?d.log.join('\n'):(d.log||d.error||'done');logMsg((acc.city||'')+': '+msg);})
    .catch(e=>logMsg('Ошибка: '+e));
 }
 
@@ -711,7 +711,7 @@ async function registerPreset(presetName) {
         })
       });
       const d = await resp.json();
-      if (d.log) logMsg(d.log.trim());
+      if (d.log) { const lines = Array.isArray(d.log) ? d.log : [d.log]; lines.forEach(l => { if(l&&l.trim) logMsg(l); }); }
       if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
       logMsg(`  JWT получен (${d.user_id})`);
       const accProxy = d.proxy || proxy;
