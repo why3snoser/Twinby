@@ -660,7 +660,7 @@ def _vk_id_login(
         log.append(f"  Response: {json.dumps(d_authorize, ensure_ascii=False)[:300]}")
 
         # 2FA check
-        if "2fa" in str(d_authorize).lower() or "validation" in str(err_name).lower():
+        if "2fa" in str(d_authorize).lower() or "validation" in str(err_code).lower():
             return {"ok": False, "error": f"2FA required: {full_err}"}
 
         # Banned
