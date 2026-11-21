@@ -27,6 +27,7 @@ from curl_cffi import requests as cffi_requests
 from curl_cffi import CurlHttpVersion
 
 import twinby_onboard as tw
+from cities import RUSSIAN_CITIES, get_cities_json
 
 app = Flask(__name__)
 
@@ -1753,8 +1754,8 @@ def swipe_page():
     return _render(PAGE_SWIPE, "swipe", log_buf, feed=feed, f=f, stats=stats)
 
 
-# ---- Вкладка: Онбординг (главная) ----
-@app.route("/", methods=["GET", "POST"])
+# ---- Вкладка: Онбординг (старая, перенесена на /old) ----
+@app.route("/old", methods=["GET", "POST"])
 def index():
     f = dict(DEFAULTS)
     log_buf = io.StringIO()
@@ -2565,11 +2566,240 @@ def api_profile():
 
 
 # ---- Новый SPA-фронт ----
-@app.route("/spa")
-def spa_page():
-    """Отдаём index.html из корня проекта."""
+# ===================== НОВЫЙ SPA =====================
+
+SETTINGS_FILE = Path(__file__).parent / "settings.json"
+PRESETS_FILE = Path(__file__).parent / "presets.json"
+
+def _load_settings() -> dict:
+    if SETTINGS_FILE.exists():
+        try: return json.loads(SETTINGS_FILE.read_text())
+        except Exception: return {}
+    return {}
+
+def _save_settings(data: dict):
+    SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+@app.route("/")
+def spa_root():
+    """Главная — SPA из index.html в корне проекта."""
     html_path = Path(__file__).parent / "index.html"
     return html_path.read_text(encoding="utf-8"), 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_settings_get():
+    return jsonify(_load_settings())
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings_save():
+    data = request.get_json(force=True)
+    _save_settings(data)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cities", methods=["GET"])
+def api_cities():
+    return jsonify(get_cities_json())
+
+
+@app.route("/api/register-account", methods=["POST"])
+def api_register_account():
+    """Полная регистрация: VK token → JWT + онбординг + профиль + локация + фильтры."""
+    import httpx
+    data = request.get_json(force=True)
+    vk_token = (data.get("vk_token") or "").strip()
+    if not vk_token:
+        return jsonify({"ok": False, "error": "Нет VK токена"})
+
+    try:
+        # 1) Авторизация через VK
+        resp = httpx.post(
+            f"{tw.BASE}{AUTH_VK_PATH}",
+            json={"provider": "vk", "token": vk_token},
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"ok": False, "error": f"Auth: {resp.status_code} {resp.text[:300]}"})
+        rd = resp.json()
+        jwt_token = rd.get("accessToken", "")
+        if not jwt_token:
+            return jsonify({"ok": False, "error": f"Нет accessToken: {json.dumps(rd, ensure_ascii=False)[:300]}"})
+
+        log_buf = io.StringIO()
+        tee = lambda m: log_buf.write(m + "\n")
+        c = _make_web_client(jwt_token, False, tee)
+
+        # 2) Онбординг
+        name = data.get("name", "")
+        birthday_raw = data.get("birthday", "")
+        gender = data.get("gender", "m")
+
+        if name and birthday_raw:
+            try:
+                birthday_iso = tw.valid_birthday(birthday_raw)
+            except (SystemExit, ValueError) as e:
+                return jsonify({"ok": False, "error": f"Дата рождения: {e}"})
+
+            try:
+                cfg = c.call("GET", tw.API["captcha_cfg"])
+                if isinstance(cfg, dict) and cfg.get("isActive"):
+                    return jsonify({"ok": False, "error": "Капча включена"})
+            except Exception:
+                pass
+
+            try: c.call("POST", tw.API["agreement"])
+            except Exception: pass
+            c.call("PATCH", tw.API["me"], json={"name": name, "language": "RU"})
+            c.call("PATCH", tw.API["me"], json={"birthday": birthday_iso})
+            c.call("PATCH", tw.API["me"], json={"onboardingStep": 1})
+            c.call("PATCH", tw.API["filter"], json=tw.FILTER_DEFAULT)
+            c.call("PATCH", tw.API["me"], json={"gender": gender})
+            c.call("PATCH", tw.API["me"], json={"onboardingStep": 2})
+            c.call("PATCH", tw.API["me"], json={"onboardingStep": 3})
+
+            # target + interview: получаем первые из списка
+            try:
+                targets = c.call("GET", tw.API["targets"])
+                if isinstance(targets, list) and targets:
+                    c.call("PATCH", tw.API["me"], json={"targetId": targets[0].get("id", "")})
+            except Exception:
+                pass
+
+            c.call("PATCH", tw.API["me"], json={"onboardingStep": 4})
+            c.call("PATCH", tw.API["me"], json={"onboardingStep": 5})
+            c.call("PATCH", tw.API["me"], json={"onboardingStep": 6})
+
+            try:
+                interviews = c.call("GET", tw.API["interviews"])
+                if isinstance(interviews, list) and interviews:
+                    iid = interviews[0].get("id", "")
+                    qs = c.call("GET", tw.API["questions"].format(iid=iid))
+                    if isinstance(qs, list) and qs:
+                        c.call("POST", tw.API["answers"],
+                               json={"test": [{"question": q["id"], "answer": 4} for q in qs]})
+            except Exception:
+                pass
+
+            c.call("PATCH", tw.API["me"], json={"onboardingCompleted": True})
+
+        # 3) Профиль
+        profile_body = {}
+        if data.get("height"):
+            profile_body["height"] = str(data["height"])
+        for k in ("education", "children", "alcohol", "smoking"):
+            if data.get(k) not in (None, ""):
+                profile_body[k] = int(data[k])
+        if data.get("about"):
+            profile_body["about"] = data["about"]
+        if profile_body:
+            c.call("PATCH", tw.API["me"], json=profile_body)
+
+        # 4) Локация
+        lat = data.get("latitude")
+        lon = data.get("longitude")
+        city_name = data.get("city_name", "")
+        if lat and lon:
+            loc_body = {"location": f"POINT({lat} {lon})"}
+            if city_name:
+                loc_body["nameCity"] = city_name
+            c.call("PATCH", tw.API["me"], json=loc_body)
+
+        # 5) Фильтры
+        filter_body = {}
+        if data.get("min_age"): filter_body["minAges"] = int(data["min_age"])
+        if data.get("max_age"): filter_body["maxAges"] = int(data["max_age"])
+        if data.get("distance"): filter_body["distance"] = int(data["distance"])
+        if data.get("filter_gender"): filter_body["gender"] = data["filter_gender"]
+        if filter_body:
+            c.call("PATCH", tw.API["filter"], json=filter_body)
+
+        # Получаем инфу о пользователе
+        user_name = name
+        user_id = ""
+        try:
+            me = c.call("GET", tw.API["me"])
+            if isinstance(me, dict):
+                user_name = me.get("name", name)
+                user_id = str(me.get("id", ""))
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/verify-video", methods=["POST"])
+def api_verify_video():
+    """Верификация через видео. FormData: token + video."""
+    token = request.form.get("token", "").strip().strip('"\'')
+    video_file = request.files.get("video")
+    if not token or not video_file:
+        return jsonify({"ok": False, "error": "Нужен token и video"})
+
+    log_buf = io.StringIO()
+    tee = lambda m: log_buf.write(m + "\n")
+    try:
+        c = _make_web_client(token, False, tee)
+        send_liveness(c, video_file, tee)
+
+        # Проверяем verified после отправки
+        import httpx
+        me_resp = httpx.get(
+            f"{tw.BASE}{tw.API['me']}",
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Authorization": f"JWT {token}"},
+            timeout=15,
+        )
+        verified = False
+        if me_resp.status_code < 400:
+            me = me_resp.json()
+            verified = me.get("verified", False)
+
+        return jsonify({"ok": True, "verified": verified, "log": log_buf.getvalue()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "verified": False, "log": log_buf.getvalue()})
+
+
+@app.route("/api/check-status", methods=["POST"])
+def api_check_status():
+    """Проверка верификации и премиума. JSON: {jwt}."""
+    import httpx
+    data = request.get_json(force=True)
+    jwt = (data.get("jwt") or "").strip().strip('"\'')
+    if not jwt:
+        return jsonify({"ok": False, "error": "Нет JWT"})
+
+    try:
+        resp = httpx.get(
+            f"{tw.BASE}{tw.API['me']}",
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Authorization": f"JWT {jwt}"},
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            return jsonify({"ok": False, "error": f"Статус {resp.status_code}"})
+
+        me = resp.json()
+        verified = me.get("verified", False)
+        premium_expire = me.get("premiumExpire")  # null = нет, "2026-12-05T..." = есть
+        subscription_status = me.get("subscriptionStatus")  # null = нет, 0 = активна
+
+        premium = premium_expire is not None and premium_expire != ""
+
+        return jsonify({
+            "ok": True,
+            "verified": verified,
+            "premium": premium,
+            "premium_expire": premium_expire,
+            "subscription_status": subscription_status
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 
 if __name__ == "__main__":
