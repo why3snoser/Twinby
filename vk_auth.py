@@ -598,6 +598,7 @@ def _vk_id_login(
         "is_registration": "0",
     }
 
+    r_authorize = None
     try:
         r_authorize = s.post(
             "https://login.vk.ru/?act=connect_authorize",
@@ -608,15 +609,24 @@ def _vk_id_login(
                 "Content-Type": "application/x-www-form-urlencoded",
             },
         )
+    except Exception as e:
+        log.append(f"  connect_authorize POST failed: {type(e).__name__}: {e}")
+        return {"ok": False, "error": f"connect_authorize POST failed: {e}"}
+
+    log.append(f"  connect_authorize → {r_authorize.status_code}, len={len(r_authorize.text)}")
+    log.append(f"  connect_authorize body: {r_authorize.text[:500]}")
+
+    try:
         d_authorize = r_authorize.json()
     except Exception as e:
-        log.append(f"  connect_authorize raw response ({r_authorize.status_code}): {r_authorize.text[:300]}")
-        return {"ok": False, "error": f"connect_authorize failed: {e}"}
+        log.append(f"  connect_authorize JSON parse failed: {e}")
+        return {"ok": False, "error": f"connect_authorize: not JSON"}
 
-    # VK иногда возвращает JSON-строку вместо объекта
-    if isinstance(d_authorize, str):
-        log.append(f"  connect_authorize returned string: {d_authorize[:300]}")
-        return {"ok": False, "error": f"connect_authorize: unexpected string response"}
+    if not isinstance(d_authorize, dict):
+        log.append(f"  connect_authorize returned {type(d_authorize).__name__}: {str(d_authorize)[:300]}")
+        return {"ok": False, "error": f"connect_authorize: response is {type(d_authorize).__name__}, not dict"}
+
+    log.append(f"  connect_authorize parsed: {json.dumps(d_authorize, ensure_ascii=False)[:500]}")
 
     # Проверить тип ответа
     resp_type = d_authorize.get("type", "")
