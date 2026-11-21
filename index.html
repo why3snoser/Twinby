@@ -506,7 +506,10 @@ function loadPresets() {
 
 function savePresetsServer(cb) {
   fetch('/api/presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(PRESETS)})
-    .then(r=>r.json()).then(()=>{rebuildAll();if(cb)cb();}).catch(()=>{});
+    .then(r=>r.json()).then(d=>{
+      rebuildAll();
+      if(cb)cb();
+    }).catch(e=>{console.error('savePresets error:', e);});
 }
 
 function rebuildAll() {
@@ -694,12 +697,15 @@ async function registerPreset(presetName) {
           logMsg(`  Фото ${pi+1}/${pc}...`);
           const fd = new FormData();
           fd.append('token', d.jwt);
-          fd.append('photo', shuffled[pi].blob);
+          fd.append('order', pi + 1);
+          fd.append('photos', shuffled[pi].blob, shuffled[pi].name || 'photo.jpg');
           try {
             const pr = await fetch('/upload-photo', {method:'POST', body:fd});
             const pd = await pr.json();
             if (pd.error) logMsg(`  Фото: ${pd.error}`);
-            else logMsg(`  Фото OK`);
+            else if (pd.results) {
+              for (const r of pd.results) logMsg(`  Фото: ${r.ok?'OK':'ОШИБКА: '+(r.message||r.status)}`);
+            } else logMsg(`  Фото OK`);
           } catch(e) { logMsg(`  Фото ошибка: ${e}`); }
         }
       }
@@ -735,6 +741,8 @@ async function registerPreset(presetName) {
       logMsg(`  ✓ Добавлен`);
     } catch(e) { logMsg(`  ОШИБКА: ${e}`); }
   }
+  // Final save & refresh
+  savePresetsServer(()=>{renderPresets(); renderPresetDetail(); updateDash();});
   logMsg('=== Регистрация завершена ===');
 }
 
