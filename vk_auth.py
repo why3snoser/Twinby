@@ -1,14 +1,12 @@
 """
-VK ID OAuth 2.0 + PKCE: получение authorization code для приложения Twinby.
+VK ID browser-style login → Twinby JWT.
 
-Стратегия (v2 — browser-style VK ID login):
-  1. GET vk.ru → начальные cookies
-  2. auth.validateAccount → sid
-  3. POST login.vk.ru/?act=connect_authorize → username/password → remixsid
-  4. GET oauth.vk.ru/authorize → implicit token (connect flow)
-  5. Используем сессию для id.vk.com/authorize → авторизуем приложение Twinby → code
-
-Капча: если VK требует капчу, решаем через RuCaptcha.
+Flow (из реального mitmproxy трафика, app_id=7497650):
+  1. GET id.vk.ru/auth → auth_token + anonymous_token из window.init
+  2. POST login.vk.ru/?act=connect_internal
+  3. POST api.vk.ru/method/auth.validateAccount (может вернуть капчу)
+  4. POST login.vk.ru/?act=connect_authorize → access_token + silent_token
+  5. PKCE flow с Twinby app_id 7984771 → Twinby JWT
 """
 from __future__ import annotations
 
@@ -24,25 +22,35 @@ from typing import Optional
 
 import httpx
 
-# Twinby VK App — из реального трафика мобильного приложения
+# ---------------------------------------------------------------------------
+# Константы
+# ---------------------------------------------------------------------------
+
+# Twinby VK App
 TWINBY_VK_APP_ID = "7984771"
 TWINBY_REDIRECT_URI = "vk7984771://vk.ru/blank.html"
 
-# VK app — default app_id из python273/vk_api для browser login
-VK_ADMIN_APP_ID = "6222115"
+# VK ID landing app (из реального трафика id.vk.ru)
+VK_ID_APP_ID = "7497650"
+
+# VK API version (из трафика)
+VK_API_VERSION = "5.280"
 
 UA_BROWSER = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 UA_DART = "Dart/3.11 (dart:io)"
 
-# Способы подтверждения, которые мы "поддерживаем"
-SUPPORTED_WAYS = "push_otp,email,callreset,sms,password,passkey,2fa_app,2fa_sms,2fa_callreset,2fa_email"
+# Способы подтверждения (из трафика: supported_ways поле)
+SUPPORTED_WAYS = (
+    "push,email,qr_code,codegen,sms,callreset,password,"
+    "reserve_code,max_messenger,max_code,official_messenger,passkey,call_in"
+)
 
 
 # ---------------------------------------------------------------------------
-# PKCE helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _pkce() -> tuple[str, str]:
@@ -55,12 +63,11 @@ def _pkce() -> tuple[str, str]:
 
 
 def _device_id() -> str:
-    """Random device ID, same length/format as real VK SDK."""
-    return base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode()
+    """Random device_id в формате VK SDK (base64url, ~21 символ)."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(15)).rstrip(b"=").decode()
 
 
 def _state() -> str:
-    """Random state parameter (>=32 chars, a-zA-Z0-9_-)."""
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
 
 
@@ -68,23 +75,42 @@ def _uuid() -> str:
     return str(_uuid_mod.uuid4())
 
 
+def _normalize_proxy(raw: str) -> str:
+    """ip:port:user:pass → http://user:pass@ip:port. Уже http:// — как есть."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://", "socks")):
+        return raw
+    parts = raw.split(":")
+    if len(parts) >= 4:
+        ip, port, user = parts[0], parts[1], parts[2]
+        pwd = ":".join(parts[3:])
+        return f"http://{user}:{pwd}@{ip}:{port}"
+    elif len(parts) == 2:
+        return f"http://{parts[0]}:{parts[1]}"
+    return raw
+
+
 # ---------------------------------------------------------------------------
-# RuCaptcha solver
+# RuCaptcha solver (image captcha)
 # ---------------------------------------------------------------------------
 
-def solve_captcha_rucaptcha(captcha_img_url: str, api_key: str) -> Optional[str]:
-    """Решить капчу через RuCaptcha API. Возвращает текст капчи или None."""
+def _solve_captcha_image(captcha_img_url: str, api_key: str,
+                         proxy: str = "") -> Optional[str]:
+    """Решить image captcha через RuCaptcha. Возвращает текст или None."""
     if not api_key:
         return None
     try:
+        kw: dict = {"timeout": 15}
+        if proxy:
+            kw["proxy"] = proxy
+        img_bytes = httpx.get(captcha_img_url, **kw).content
+
         r1 = httpx.post(
             "https://rucaptcha.com/in.php",
-            data={
-                "key": api_key,
-                "method": "base64",
-                "json": "1",
-            },
-            files={"file": ("captcha.jpg", httpx.get(captcha_img_url, timeout=10).content)},
+            data={"key": api_key, "method": "base64", "json": "1"},
+            files={"file": ("captcha.jpg", img_bytes)},
             timeout=30,
         )
         d1 = r1.json()
@@ -92,7 +118,7 @@ def solve_captcha_rucaptcha(captcha_img_url: str, api_key: str) -> Optional[str]
             return None
         task_id = d1["request"]
 
-        for _ in range(12):
+        for _ in range(24):
             time.sleep(5)
             r2 = httpx.get(
                 f"https://rucaptcha.com/res.php?key={api_key}&action=get&id={task_id}&json=1",
@@ -109,18 +135,177 @@ def solve_captcha_rucaptcha(captcha_img_url: str, api_key: str) -> Optional[str]
 
 
 # ---------------------------------------------------------------------------
-# Извлечение кода из redirect URL
+# VK "not_robot_captcha" solver через RuCaptcha funcaptcha/custom
+# ---------------------------------------------------------------------------
+
+def _solve_not_robot_captcha(
+    s: httpx.Client,
+    redirect_uri: str,
+    api_key: str,
+    log: list,
+) -> Optional[str]:
+    """
+    Обработка VK not_robot_captcha (checkbox/puzzle).
+    redirect_uri содержит session_token из ответа validateAccount.
+
+    Возвращает success_token или None.
+    """
+    if not api_key:
+        log.append("  [captcha] No RuCaptcha key, cannot solve not_robot_captcha")
+        return None
+
+    # Извлечь session_token из redirect_uri
+    parsed = urllib.parse.urlparse(redirect_uri)
+    qs = urllib.parse.parse_qs(parsed.query)
+    session_token = qs.get("session_token", [""])[0]
+    if not session_token:
+        # Может быть во fragment
+        qs2 = urllib.parse.parse_qs(parsed.fragment)
+        session_token = qs2.get("session_token", [""])[0]
+
+    if not session_token:
+        log.append("  [captcha] No session_token in redirect_uri")
+        return None
+
+    log.append(f"  [captcha] session_token: {session_token[:30]}...")
+
+    # Step 1: initSession
+    try:
+        r_init = s.post(
+            "https://api.vk.ru/method/captchaNotRobot.initSession",
+            params={"v": "5.131"},
+            data={"session_token": session_token},
+        )
+        d_init = r_init.json()
+        resp_init = d_init.get("response", {})
+        captcha_id = resp_init.get("captcha_id", "")
+        show_type = resp_init.get("show_captcha_type", "")
+        log.append(f"  [captcha] initSession: id={captcha_id}, type={show_type}")
+    except Exception as e:
+        log.append(f"  [captcha] initSession failed: {e}")
+        return None
+
+    if not captcha_id:
+        log.append("  [captcha] No captcha_id from initSession")
+        return None
+
+    # Если это checkbox — пробуем автоматически пройти
+    if show_type == "checkbox":
+        # Step 2: settings
+        try:
+            r_settings = s.post(
+                "https://api.vk.ru/method/captchaNotRobot.settings",
+                params={"v": "5.131"},
+                data={"captcha_id": captcha_id},
+            )
+            log.append(f"  [captcha] settings: {r_settings.status_code}")
+        except Exception as e:
+            log.append(f"  [captcha] settings failed: {e}")
+
+        # Step 3: componentDone (имитация клика на checkbox)
+        try:
+            r_done = s.post(
+                "https://api.vk.ru/method/captchaNotRobot.componentDone",
+                params={"v": "5.131"},
+                data={
+                    "captcha_id": captcha_id,
+                    "component": "checkbox",
+                },
+            )
+            d_done = r_done.json()
+            status = d_done.get("response", {}).get("status", "")
+            log.append(f"  [captcha] componentDone: status={status}")
+        except Exception as e:
+            log.append(f"  [captcha] componentDone failed: {e}")
+
+        # Step 4: check
+        try:
+            r_check = s.post(
+                "https://api.vk.ru/method/captchaNotRobot.check",
+                params={"v": "5.131"},
+                data={
+                    "captcha_id": captcha_id,
+                    # Минимальные sensor данные — VK может принять или отклонить
+                    "sensor_data": json.dumps({
+                        "mouse_events": [],
+                        "touch_events": [],
+                        "key_events": [],
+                        "timestamp": int(time.time() * 1000),
+                    }),
+                },
+            )
+            d_check = r_check.json()
+            resp_check = d_check.get("response", {})
+            success_token = resp_check.get("success_token", "")
+            if success_token:
+                log.append(f"  [captcha] check OK: {success_token[:30]}...")
+                # endSession
+                try:
+                    s.post(
+                        "https://api.vk.ru/method/captchaNotRobot.endSession",
+                        params={"v": "5.131"},
+                        data={"captcha_id": captcha_id},
+                    )
+                except Exception:
+                    pass
+                return success_token
+            else:
+                log.append(f"  [captcha] check failed: {json.dumps(d_check, ensure_ascii=False)[:200]}")
+        except Exception as e:
+            log.append(f"  [captcha] check failed: {e}")
+
+    # Если checkbox не прошёл или другой тип — fallback на RuCaptcha
+    # Отправляем как funcaptcha / custom task
+    log.append("  [captcha] Checkbox auto-solve failed, trying RuCaptcha for VK captcha...")
+
+    # Попробовать получить captcha image URL через GET redirect_uri
+    try:
+        r_page = s.get(redirect_uri, follow_redirects=True)
+        # Ищем img src для классической капчи
+        img_match = re.search(r'<img[^>]+src="([^"]*captcha[^"]*)"', r_page.text)
+        if img_match:
+            captcha_img = img_match.group(1)
+            if not captcha_img.startswith("http"):
+                captcha_img = "https://api.vk.ru" + captcha_img
+            log.append(f"  [captcha] Found image captcha: {captcha_img[:80]}")
+            solution = _solve_captcha_image(captcha_img, api_key)
+            if solution:
+                log.append(f"  [captcha] RuCaptcha solved: {solution}")
+                # Попробовать check с решением
+                try:
+                    r_check2 = s.post(
+                        "https://api.vk.ru/method/captchaNotRobot.check",
+                        params={"v": "5.131"},
+                        data={
+                            "captcha_id": captcha_id,
+                            "captcha_answer": solution,
+                        },
+                    )
+                    d_check2 = r_check2.json()
+                    st2 = d_check2.get("response", {}).get("success_token", "")
+                    if st2:
+                        log.append(f"  [captcha] RuCaptcha check OK: {st2[:30]}...")
+                        return st2
+                except Exception as e:
+                    log.append(f"  [captcha] RuCaptcha check failed: {e}")
+    except Exception as e:
+        log.append(f"  [captcha] GET captcha page failed: {e}")
+
+    log.append("  [captcha] Could not solve captcha")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Извлечение code из redirect URL
 # ---------------------------------------------------------------------------
 
 def _extract_code_from_url(url: str) -> Optional[str]:
-    """Извлечь authorization code из redirect URL."""
     parsed = urllib.parse.urlparse(url)
     for part in (parsed.query, parsed.fragment):
         params = urllib.parse.parse_qs(part)
         code = params.get("code", [""])[0]
         if code:
             return code
-    # VK ID кладёт payload в query
     payload_raw = urllib.parse.parse_qs(parsed.query).get("payload", [""])[0]
     if payload_raw:
         try:
@@ -132,51 +317,11 @@ def _extract_code_from_url(url: str) -> Optional[str]:
     return None
 
 
-def _extract_device_id_from_url(url: str) -> Optional[str]:
-    """Извлечь device_id из redirect URL (VK ID кладёт его в payload)."""
-    parsed = urllib.parse.urlparse(url)
-    payload_raw = urllib.parse.parse_qs(parsed.query).get("payload", [""])[0]
-    if payload_raw:
-        try:
-            payload = json.loads(payload_raw)
-            return payload.get("device_id")
-        except Exception:
-            pass
-    return None
-
-
-def _follow_redirects_for_code(client: httpx.Client, resp: httpx.Response,
-                                max_hops: int = 10, log: list = None) -> Optional[str]:
-    """Следовать редиректам, пока не найдём code."""
-    for _ in range(max_hops):
-        if resp.status_code not in (301, 302, 303, 307, 308):
-            return None
-        location = resp.headers.get("location", "")
-        if log is not None:
-            log.append(f"  → {resp.status_code} → {location[:120]}")
-
-        if location.startswith(TWINBY_REDIRECT_URI) or location.startswith("vk7984771://"):
-            return _extract_code_from_url(location)
-
-        if location.startswith("/"):
-            base = f"{resp.url.scheme}://{resp.url.host}"
-            location = base + location
-
-        if not location.startswith("http"):
-            return _extract_code_from_url(location)
-
-        try:
-            resp = client.get(location)
-        except Exception:
-            return None
-    return None
-
-
 # ---------------------------------------------------------------------------
-# VK ID browser-style login (port of python273/vk_api flow)
+# VK ID auth flow (из реального трафика)
 # ---------------------------------------------------------------------------
 
-def _vk_browser_login(
+def _vk_id_login(
     s: httpx.Client,
     login: str,
     password: str,
@@ -184,200 +329,300 @@ def _vk_browser_login(
     rucaptcha_key: str = "",
 ) -> dict:
     """
-    Эмуляция браузерного логина VK через VK ID.
-    Результат: remixsid cookie в сессии s.
+    Полный VK ID login flow через id.vk.ru (app_id=7497650).
 
     Returns:
-        {"ok": True} или {"ok": False, "error": "..."}
+        ok=True:  access_token, silent_token, user_id
+        ok=False: error
     """
-    # --- Шаг 1: GET vk.ru для начальных cookies ---
-    log.append("[1] GET vk.ru")
-    try:
-        r_init = s.get("https://vk.ru/", follow_redirects=True)
-        log.append(f"  → {r_init.status_code}, url={str(r_init.url)[:80]}")
-    except Exception as e:
-        log.append(f"  GET vk.ru failed: {e}")
-        return {"ok": False, "error": f"GET vk.ru failed: {e}"}
-
-    # Извлечь auth_token (может быть в cookies или в HTML)
-    auth_token = ""
-    for c in s.cookies.jar:
-        if c.name == "auth_token":
-            auth_token = c.value
-            break
-
-    # sid из cookies
-    sid = ""
-    for c in s.cookies.jar:
-        if c.name == "auth_sid":
-            sid = c.value
-            break
-
+    my_uuid = _uuid()
     device_id = _device_id()
 
-    # --- Шаг 2: auth.validateAccount ---
-    log.append("[2] auth.validateAccount")
-    validate_params = {
-        "v": "5.207",
-        "client_id": VK_ADMIN_APP_ID,
-        "login": login,
-        "sid": sid,
-        "device_id": device_id,
-        "auth_token": auth_token,
-        "super_app_token": "",
-        "supported_ways": SUPPORTED_WAYS,
-        "is_switcher_flow": "0",
-        "is_edu_flow": "",
-        "is_registration": "",
-        "access_token": "",
-        "with_cookies": "1",
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 1: GET id.vk.ru/auth — получить auth_token и anonymous_token
+    # ═══════════════════════════════════════════════════════════════════════
+    log.append("[1] GET id.vk.ru/auth")
+
+    auth_page_params = {
+        "uuid": my_uuid,
+        "response_type": "silent_token",
+        "v": "1.3.0",
+        "sdk_type": "vkid",
+        "app_id": VK_ID_APP_ID,
+        "redirect_uri": f"https://id.vk.ru/auth?uuid={my_uuid}&response_type=silent_token"
+                        f"&v=1.3.0&sdk_type=vkid&app_id={VK_ID_APP_ID}",
     }
 
     try:
-        r_validate = s.post(
-            "https://api.vk.ru/method/auth.validateAccount",
-            data=validate_params,
+        r_auth = s.get(
+            "https://id.vk.ru/auth",
+            params=auth_page_params,
+            follow_redirects=True,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+            },
+        )
+        log.append(f"  → {r_auth.status_code}, len={len(r_auth.text)}")
+    except Exception as e:
+        return {"ok": False, "error": f"GET id.vk.ru/auth failed: {e}"}
+
+    # Извлечь window.init JSON
+    auth_token = ""
+    anonymous_token = ""
+
+    init_match = re.search(r'window\.init\s*=\s*(\{.+?\});\s*\n', r_auth.text, re.DOTALL)
+    if init_match:
+        try:
+            init_data = json.loads(init_match.group(1))
+            # auth_token в init_data["auth"]["access_token"]
+            auth_section = init_data.get("auth", {})
+            auth_token = auth_section.get("access_token", "")
+            anonymous_token = auth_section.get("anonymous_token", "")
+            if not anonymous_token:
+                # Может быть в другом месте
+                anonymous_token = init_data.get("anonymous_token", "")
+            log.append(f"  auth_token: {auth_token[:40]}..." if auth_token else "  auth_token: NOT FOUND")
+            log.append(f"  anon_token: {anonymous_token[:40]}..." if anonymous_token else "  anon_token: NOT FOUND")
+        except Exception as e:
+            log.append(f"  window.init parse error: {e}")
+    else:
+        log.append("  window.init NOT FOUND in page")
+        # Попробовать другой паттерн
+        alt_match = re.search(r'"access_token"\s*:\s*"(eyJ[^"]+)"', r_auth.text)
+        if alt_match:
+            auth_token = alt_match.group(1)
+            log.append(f"  auth_token (alt): {auth_token[:40]}...")
+        anon_match = re.search(r'"anonymous_token"\s*:\s*"(anonym\.[^"]+)"', r_auth.text)
+        if anon_match:
+            anonymous_token = anon_match.group(1)
+            log.append(f"  anon_token (alt): {anonymous_token[:40]}...")
+
+    if not auth_token:
+        return {"ok": False, "error": "Не удалось получить auth_token из id.vk.ru/auth"}
+
+    time.sleep(0.3)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 2: POST login.vk.ru/?act=connect_internal
+    # ═══════════════════════════════════════════════════════════════════════
+    log.append("[2] POST login.vk.ru/?act=connect_internal")
+
+    try:
+        r_connect = s.post(
+            "https://login.vk.ru/?act=connect_internal",
+            data={
+                "uuid": my_uuid,
+                "device_id": device_id,
+                "version": "1",
+                "app_id": VK_ID_APP_ID,
+            },
             headers={
                 "Origin": "https://id.vk.ru",
                 "Referer": "https://id.vk.ru/",
+                "Content-Type": "application/x-www-form-urlencoded",
             },
         )
-        d_validate = r_validate.json()
-        log.append(f"  → {r_validate.status_code}")
+        d_connect = r_connect.json()
+        log.append(f"  → {r_connect.status_code}: type={d_connect.get('type')}")
     except Exception as e:
-        log.append(f"  validateAccount failed: {e}")
-        return {"ok": False, "error": f"validateAccount failed: {e}"}
+        log.append(f"  connect_internal failed: {e}")
+        # Не фатально, продолжаем
 
-    resp_data = d_validate.get("response", {})
-    if "error" in d_validate and "response" not in d_validate:
-        err = d_validate["error"]
-        err_msg = err.get("error_msg", str(err)) if isinstance(err, dict) else str(err)
-        log.append(f"  validateAccount error: {err_msg}")
-        return {"ok": False, "error": f"validateAccount: {err_msg}"}
+    time.sleep(0.3)
 
-    # Получить sid и flow_name из ответа
-    new_sid = resp_data.get("sid", sid)
-    if new_sid:
-        sid = new_sid
-    flow_name = resp_data.get("flow_name", "")
-    can_skip_password = resp_data.get("can_skip_password", False)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 3: POST api.vk.ru/method/auth.validateAccount
+    # ═══════════════════════════════════════════════════════════════════════
+    log.append("[3] POST auth.validateAccount")
 
-    log.append(f"  sid={sid[:20]}..., flow={flow_name}, skip_pwd={can_skip_password}")
+    validate_data = {
+        "login": login,
+        "client_id": VK_ID_APP_ID,
+        "device_id": device_id,
+        "supported_ways": SUPPORTED_WAYS,
+        "auth_token": auth_token,
+        "anonymous_token": anonymous_token,
+    }
+
+    max_captcha_attempts = 3
+    captcha_success_token = ""
+
+    for attempt in range(max_captcha_attempts + 1):
+        post_data = dict(validate_data)
+        if captcha_success_token:
+            # После решения капчи — добавить success_token
+            post_data["success_token"] = captcha_success_token
+
+        try:
+            r_validate = s.post(
+                f"https://api.vk.ru/method/auth.validateAccount?v={VK_API_VERSION}&client_id={VK_ID_APP_ID}",
+                data=post_data,
+                headers={
+                    "Origin": "https://id.vk.ru",
+                    "Referer": "https://id.vk.ru/",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            d_validate = r_validate.json()
+        except Exception as e:
+            return {"ok": False, "error": f"validateAccount failed: {e}"}
+
+        # Проверить на ошибку
+        if "error" in d_validate:
+            err = d_validate["error"]
+            error_code = err.get("error_code", 0) if isinstance(err, dict) else 0
+            error_msg = err.get("error_msg", str(err)) if isinstance(err, dict) else str(err)
+
+            # error_code 14 = captcha required
+            if error_code == 14:
+                redirect_uri = err.get("redirect_uri", "")
+                captcha_sid = err.get("captcha_sid", "")
+                captcha_img = err.get("captcha_img", "")
+                log.append(f"  validateAccount: captcha required (attempt {attempt + 1})")
+
+                if redirect_uri and rucaptcha_key:
+                    # VK not_robot_captcha flow
+                    success_token = _solve_not_robot_captcha(s, redirect_uri, rucaptcha_key, log)
+                    if success_token:
+                        captcha_success_token = success_token
+                        continue
+                elif captcha_img and rucaptcha_key:
+                    # Классическая image captcha
+                    solution = _solve_captcha_image(captcha_img, rucaptcha_key)
+                    if solution:
+                        post_data["captcha_sid"] = captcha_sid
+                        post_data["captcha_key"] = solution
+                        log.append(f"  Image captcha solved: {solution}")
+                        continue
+
+                return {"ok": False, "error": f"Captcha required, could not solve: {error_msg}"}
+
+            log.append(f"  validateAccount error: [{error_code}] {error_msg}")
+            return {"ok": False, "error": f"validateAccount: {error_msg}"}
+
+        # Успешный ответ
+        resp = d_validate.get("response", {})
+        flow_names = resp.get("flow_names", [])
+        sid = resp.get("sid", "")
+        is_phone = resp.get("is_phone", False)
+        log.append(f"  → flow_names={flow_names}, sid={sid[:30]}..., is_phone={is_phone}")
+        break
+    else:
+        return {"ok": False, "error": "Captcha: exceeded max attempts"}
 
     time.sleep(0.5)
 
-    # --- Шаг 3: POST login.vk.ru/?act=connect_authorize ---
-    log.append("[3] POST login.vk.ru/?act=connect_authorize")
+    # ═══════════════════════════════════════════════════════════════════════
+    # Step 4: POST login.vk.ru/?act=connect_authorize (отправка пароля)
+    # ═══════════════════════════════════════════════════════════════════════
+    log.append("[4] POST login.vk.ru/?act=connect_authorize")
 
-    connect_data = {
+    authorize_data = {
         "username": login,
         "password": password,
         "auth_token": auth_token,
-        "sid": sid,
-        "uuid": _uuid(),
+        "uuid": my_uuid,
+        "v": VK_API_VERSION,
         "device_id": device_id,
-        "app_id": VK_ADMIN_APP_ID,
-        "v": "5.207",
-        "service_group": "",
-        "save_user": "1",
+        "oauth_response_type": "silent_token",
+        "app_id": VK_ID_APP_ID,
         "version": "1",
+        "is_registration": "0",
     }
 
     try:
-        r_login = s.post(
+        r_authorize = s.post(
             "https://login.vk.ru/?act=connect_authorize",
-            data=connect_data,
+            data=authorize_data,
             headers={
-                "Content-Type": "application/x-www-form-urlencoded",
                 "Origin": "https://id.vk.ru",
                 "Referer": "https://id.vk.ru/",
+                "Content-Type": "application/x-www-form-urlencoded",
             },
-            follow_redirects=True,
         )
-        log.append(f"  → {r_login.status_code}")
+        d_authorize = r_authorize.json()
     except Exception as e:
-        log.append(f"  connect_authorize failed: {e}")
         return {"ok": False, "error": f"connect_authorize failed: {e}"}
 
-    # Проверить ответ
-    try:
-        d_login = r_login.json()
-    except Exception:
-        d_login = {}
+    # Проверить тип ответа
+    resp_type = d_authorize.get("type", "")
+    if resp_type == "error":
+        err_info = d_authorize.get("error_info", {})
+        err_name = err_info.get("error", d_authorize.get("error", ""))
+        err_desc = err_info.get("error_description", "")
+        full_err = f"{err_name}: {err_desc}" if err_desc else str(err_name)
+        log.append(f"  connect_authorize error: {full_err}")
+        log.append(f"  Response: {json.dumps(d_authorize, ensure_ascii=False)[:300]}")
 
-    if d_login.get("type") == "error" or d_login.get("error"):
-        err_name = d_login.get("error_info", {}).get("error", "")
-        err_desc = d_login.get("error_info", {}).get("error_description", "")
-        if not err_name:
-            err_name = d_login.get("error", "")
-            err_desc = d_login.get("error_description", "")
-        err_msg = f"{err_name}: {err_desc}" if err_desc else str(err_name)
-        log.append(f"  Login error: {err_msg}")
-        log.append(f"  Full response: {json.dumps(d_login, ensure_ascii=False)[:500]}")
+        # 2FA check
+        if "2fa" in str(d_authorize).lower() or "validation" in str(err_name).lower():
+            return {"ok": False, "error": f"2FA required: {full_err}"}
 
-        # Проверить на бан
-        if d_login.get("is_user_banned"):
-            return {"ok": False, "error": "Аккаунт VK заблокирован"}
+        # Banned
+        if d_authorize.get("is_user_banned"):
+            return {"ok": False, "error": "Account banned"}
 
-        # Проверить на капчу
-        if "captcha" in str(err_name).lower() or "captcha" in str(d_login).lower():
-            captcha_sid = d_login.get("captcha_sid", "")
-            captcha_img = d_login.get("captcha_img", "")
-            if rucaptcha_key and captcha_img:
-                log.append("  Solving captcha via RuCaptcha...")
-                solution = solve_captcha_rucaptcha(captcha_img, rucaptcha_key)
-                if solution:
-                    log.append(f"  Captcha solved: {solution}")
-                    # TODO: retry with captcha
-            return {"ok": False, "error": f"Captcha required: {err_msg}"}
+        # Wrong password
+        if "password" in str(err_name).lower() or "credentials" in str(err_name).lower():
+            return {"ok": False, "error": f"Wrong password: {full_err}"}
 
-        # Flood control / bruteforce
-        if "flood" in str(d_login).lower() or "bruteforce" in str(d_login).lower():
-            return {"ok": False, "error": f"VK flood control: {err_msg}"}
+        # Flood
+        if "flood" in str(d_authorize).lower() or "bruteforce" in str(d_authorize).lower():
+            return {"ok": False, "error": f"VK flood control: {full_err}"}
 
-        return {"ok": False, "error": f"VK login failed: {err_msg}"}
+        return {"ok": False, "error": f"VK login failed: {full_err}"}
 
-    # Проверить что получили remixsid
-    has_remixsid = False
-    for c in s.cookies.jar:
-        if c.name in ("remixsid", "remixsid6"):
-            has_remixsid = True
-            break
+    if resp_type != "okay":
+        log.append(f"  Unexpected response type: {resp_type}")
+        log.append(f"  Response: {json.dumps(d_authorize, ensure_ascii=False)[:500]}")
+        return {"ok": False, "error": f"Unexpected VK response type: {resp_type}"}
 
-    if not has_remixsid:
-        # Иногда ответ содержит данные в JSON
-        if d_login.get("access_token") or d_login.get("code"):
-            log.append(f"  Got token/code from connect_authorize response")
-        else:
-            log.append(f"  No remixsid cookie set. Response: {json.dumps(d_login, ensure_ascii=False)[:500]}")
-            # Не фатально — может быть что cookie на другом домене
-            log.append("  Continuing without remixsid...")
+    # Извлечь токены из ответа
+    data = d_authorize.get("data", {})
+    access_token = data.get("access_token", "")
+    auth_info = data.get("auth_info", {})
+    silent_token = auth_info.get("token", "")
+    user_info = auth_info.get("user", {})
+    user_id = user_info.get("id", 0)
+    token_uuid = auth_info.get("uuid", my_uuid)
+    token_hash = auth_info.get("hash", "")
 
-    log.append("  VK browser login OK")
-    return {"ok": True, "device_id": device_id}
+    if not access_token and not silent_token:
+        log.append(f"  No tokens in response: {json.dumps(d_authorize, ensure_ascii=False)[:300]}")
+        return {"ok": False, "error": "No access_token or silent_token in VK response"}
+
+    log.append(f"  VK login OK! user_id={user_id}")
+    log.append(f"  access_token: {access_token[:30]}..." if access_token else "  access_token: NONE")
+    log.append(f"  silent_token: {silent_token[:30]}..." if silent_token else "  silent_token: NONE")
+
+    return {
+        "ok": True,
+        "access_token": access_token,
+        "silent_token": silent_token,
+        "user_id": user_id,
+        "uuid": token_uuid,
+        "hash": token_hash,
+        "device_id": device_id,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Main: получение VK auth code через VK ID browser login
+# Получение authorization code для Twinby через VK ID
 # ---------------------------------------------------------------------------
 
 def get_vk_auth_code(
     login: str,
     password: str,
     rucaptcha_key: str = "",
-    captcha_sid: str = "",
-    captcha_key: str = "",
     proxy: str = "",
 ) -> dict:
     """
-    Получить VK ID authorization code для приложения Twinby.
-
-    Использует browser-style VK ID login flow вместо deprecated password grant.
+    VK ID login → authorization code для Twinby.
 
     Returns:
-        dict с полями:
-          ok=True:  code, code_verifier, device_id, state, redirect_uri, log
-          ok=False: error, log
+        ok=True:  code, code_verifier, device_id, state, redirect_uri, log
+        ok=False: error, log
     """
     code_verifier, code_challenge = _pkce()
     state = _state()
@@ -387,145 +632,32 @@ def get_vk_auth_code(
         client_kw: dict = {
             "follow_redirects": False,
             "timeout": 30,
-            "headers": {"User-Agent": UA_BROWSER},
+            "headers": {
+                "User-Agent": UA_BROWSER,
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+            },
         }
         if proxy:
             client_kw["proxy"] = proxy
 
         with httpx.Client(**client_kw) as s:
-            # ═══════════════════════════════════════════════════════════
-            # Фаза 1: Browser-style VK login → remixsid cookie
-            # ═══════════════════════════════════════════════════════════
-            login_result = _vk_browser_login(s, login, password, log, rucaptcha_key)
-            if not login_result.get("ok"):
-                return {**login_result, "log": log}
+            # Phase 1: VK ID login
+            vk_result = _vk_id_login(s, login, password, log, rucaptcha_key)
+            if not vk_result.get("ok"):
+                return {**vk_result, "log": log}
 
-            vk_device_id = login_result.get("device_id", _device_id())
+            vk_access_token = vk_result["access_token"]
+            silent_token = vk_result.get("silent_token", "")
+            vk_uuid = vk_result.get("uuid", "")
+            vk_hash = vk_result.get("hash", "")
+            vk_device_id = vk_result["device_id"]
 
-            # ═══════════════════════════════════════════════════════════
-            # Фаза 2: Получить implicit access_token через oauth.vk.ru
-            # ═══════════════════════════════════════════════════════════
-            log.append("[4] GET oauth.vk.ru/authorize (implicit)")
+            # Phase 2: Exchange silent_token → auth code для Twinby
+            # Через /oauth2/auth endpoint VK ID
 
-            implicit_params = {
-                "client_id": VK_ADMIN_APP_ID,
-                "scope": "",
-                "response_type": "token",
-                "v": "5.207",
-            }
-            r_oauth = s.get("https://oauth.vk.ru/authorize", params=implicit_params)
-            log.append(f"  → {r_oauth.status_code}")
+            log.append("[5] GET id.vk.ru/oauth2/auth (Twinby PKCE)")
 
-            vk_access_token = ""
-
-            # Проверить на редирект с token
-            if r_oauth.status_code in (301, 302, 303, 307, 308):
-                loc = r_oauth.headers.get("location", "")
-                log.append(f"  → redirect: {loc[:120]}")
-                parsed = urllib.parse.urlparse(loc)
-                frag_params = urllib.parse.parse_qs(parsed.fragment)
-                vk_access_token = frag_params.get("access_token", [""])[0]
-
-            # Если 200 — ищем в HTML (может быть connect flow)
-            if not vk_access_token and r_oauth.status_code == 200:
-                html = r_oauth.text
-
-                # Проверяем window.init JSON для connect flow
-                init_match = re.search(r'window\.init\s*=\s*(\{.*?\});', html, re.DOTALL)
-                if init_match:
-                    try:
-                        init_data = json.loads(init_match.group(1))
-                        return_auth_hash = init_data.get("return_auth_hash", "")
-                        if return_auth_hash:
-                            log.append("[4b] POST login.vk.ru/?act=connect_internal")
-                            r_connect = s.post(
-                                "https://login.vk.ru/?act=connect_internal",
-                                data={
-                                    "uuid": _uuid(),
-                                    "service_group": "",
-                                    "return_auth_hash": return_auth_hash,
-                                    "version": "1",
-                                    "app_id": VK_ADMIN_APP_ID,
-                                },
-                                headers={
-                                    "Origin": "https://id.vk.ru",
-                                    "Referer": "https://id.vk.ru/",
-                                },
-                            )
-                            log.append(f"  → {r_connect.status_code}")
-                            try:
-                                d_connect = r_connect.json()
-                                connect_token = d_connect.get("access_token", "")
-                                auth_hash = d_connect.get("auth_hash", "")
-                                auth_user_hash = d_connect.get("auth_user_hash", "")
-                                if connect_token or auth_hash:
-                                    log.append("[4c] POST auth.getOauthToken")
-                                    r_oauth_token = s.post(
-                                        "https://api.vk.ru/method/auth.getOauthToken",
-                                        data={
-                                            "hash": auth_hash,
-                                            "auth_user_hash": auth_user_hash,
-                                            "app_id": VK_ADMIN_APP_ID,
-                                            "client_id": VK_ADMIN_APP_ID,
-                                            "scope": "",
-                                            "access_token": connect_token,
-                                            "is_seamless_auth": "1",
-                                            "v": "5.207",
-                                        },
-                                    )
-                                    log.append(f"  → {r_oauth_token.status_code}")
-                                    try:
-                                        d_ot = r_oauth_token.json()
-                                        resp_ot = d_ot.get("response", {})
-                                        vk_access_token = resp_ot.get("access_token", "")
-                                        if not vk_access_token:
-                                            # Может быть authorize_url с token в fragment
-                                            auth_url = resp_ot.get("authorize_url", "")
-                                            if auth_url:
-                                                frag = urllib.parse.urlparse(auth_url).fragment
-                                                fp = urllib.parse.parse_qs(frag)
-                                                vk_access_token = fp.get("access_token", [""])[0]
-                                    except Exception as e:
-                                        log.append(f"  getOauthToken parse error: {e}")
-                            except Exception as e:
-                                log.append(f"  connect_internal parse error: {e}")
-                    except Exception as e:
-                        log.append(f"  window.init parse error: {e}")
-
-                # Прямой access_token в URL fragment или HTML
-                if not vk_access_token:
-                    m = re.search(r'access_token=([a-zA-Z0-9._-]+)', html)
-                    if m:
-                        vk_access_token = m.group(1)
-
-                # Fallback: follow redirect if there's authorize_url in HTML
-                if not vk_access_token:
-                    m = re.search(r'"authorize_url"\s*:\s*"([^"]+)"', html)
-                    if m:
-                        auth_url = m.group(1).replace("\\/", "/")
-                        frag = urllib.parse.urlparse(auth_url).fragment
-                        fp = urllib.parse.parse_qs(frag)
-                        vk_access_token = fp.get("access_token", [""])[0]
-                        if not vk_access_token:
-                            try:
-                                r_follow = s.get(auth_url, follow_redirects=True)
-                                frag2 = urllib.parse.urlparse(str(r_follow.url)).fragment
-                                fp2 = urllib.parse.parse_qs(frag2)
-                                vk_access_token = fp2.get("access_token", [""])[0]
-                            except Exception:
-                                pass
-
-            if vk_access_token:
-                log.append(f"  VK access_token: {vk_access_token[:25]}...")
-            else:
-                log.append("  No VK access_token from implicit flow, trying direct PKCE...")
-
-            # ═══════════════════════════════════════════════════════════
-            # Фаза 3: Получить authorization code для Twinby
-            # ═══════════════════════════════════════════════════════════
-
-            # Метод A: id.vk.ru/authorize с cookies сессии (PKCE flow)
-            log.append("[5] GET id.vk.ru/authorize (Twinby PKCE)")
+            # Попытка A: Через VK ID /oauth2/auth с cookies сессии
             authorize_params = {
                 "response_type": "code",
                 "client_id": TWINBY_VK_APP_ID,
@@ -533,98 +665,208 @@ def get_vk_auth_code(
                 "code_challenge": code_challenge,
                 "code_challenge_method": "s256",
                 "state": state,
-                "device_id": vk_device_id,
                 "scope": "",
             }
 
-            r_twinby = s.get("https://id.vk.ru/authorize", params=authorize_params)
-            log.append(f"  → {r_twinby.status_code}")
-
-            code = _follow_redirects_for_code(s, r_twinby, log=log)
-            if code:
-                log.append(f"  Code from id.vk.ru: {code[:30]}...")
-                return _success(code, code_verifier, vk_device_id, state, log)
-
-            # Если 200 — ищем code в HTML/payload
-            if r_twinby.status_code == 200:
-                html_vkid = r_twinby.text
-
-                # Проверить payload в URL после redirect
-                for pattern in [
-                    r'"code"\s*:\s*"([^"]+)"',
-                    r'code=([a-zA-Z0-9._-]+)',
-                ]:
-                    m = re.search(pattern, html_vkid)
-                    if m:
-                        val = m.group(1)
-                        if val.startswith("vk2.") or len(val) > 50:
-                            log.append(f"  Found code in VK ID page: {val[:30]}...")
-                            return _success(val, code_verifier, vk_device_id, state, log)
-
-                log.append(f"  VK ID page (300 chars): {html_vkid[:300]}")
-
-            # Метод B: oauth.vk.ru/authorize (старый endpoint, с cookies)
-            log.append("[6] GET oauth.vk.ru/authorize (Twinby, legacy)")
-            legacy_params = {
-                "client_id": TWINBY_VK_APP_ID,
-                "redirect_uri": TWINBY_REDIRECT_URI,
-                "response_type": "code",
-                "scope": "",
-                "state": state,
-                "code_challenge": code_challenge,
-                "code_challenge_method": "s256",
-                "v": "5.199",
-            }
-            r_legacy = s.get("https://oauth.vk.ru/authorize", params=legacy_params)
-            log.append(f"  → {r_legacy.status_code}")
-
-            code = _follow_redirects_for_code(s, r_legacy, log=log)
-            if code:
-                log.append(f"  Code from oauth.vk.ru: {code[:30]}...")
-                return _success(code, code_verifier, vk_device_id, state, log)
-
-            if r_legacy.status_code == 200:
-                html_legacy = r_legacy.text
-                # Ищем grant_access URL
-                grant_match = re.search(
-                    r'location\.href\s*=\s*["\']([^"\']+)["\']', html_legacy
-                ) or re.search(
-                    r'<form[^>]+action="([^"]+grant_access[^"]*)"', html_legacy
+            try:
+                r_auth = s.get(
+                    "https://id.vk.ru/oauth2/auth",
+                    params=authorize_params,
+                    headers={
+                        "Referer": "https://id.vk.ru/",
+                    },
                 )
-                if grant_match:
-                    grant_url = grant_match.group(1).replace("&amp;", "&")
-                    log.append(f"  Found grant URL: {grant_url[:100]}")
-                    try:
-                        full_url = grant_url if grant_url.startswith("http") else f"https://oauth.vk.ru{grant_url}"
-                        r_grant = s.get(full_url)
-                        code = _follow_redirects_for_code(s, r_grant, log=log)
+                log.append(f"  → {r_auth.status_code}")
+
+                if r_auth.status_code in (301, 302, 303, 307, 308):
+                    loc = r_auth.headers.get("location", "")
+                    log.append(f"  → redirect: {loc[:120]}")
+                    code = _extract_code_from_url(loc)
+                    if code:
+                        log.append(f"  Code from redirect: {code[:30]}...")
+                        return _success(code, code_verifier, vk_device_id, state, log)
+
+                # Проверить HTML
+                if r_auth.status_code == 200:
+                    html = r_auth.text
+                    for pat in [r'"code"\s*:\s*"([^"]+)"', r'code=([a-zA-Z0-9._-]+)']:
+                        m = re.search(pat, html)
+                        if m:
+                            val = m.group(1)
+                            if len(val) > 20:
+                                log.append(f"  Code from HTML: {val[:30]}...")
+                                return _success(val, code_verifier, vk_device_id, state, log)
+            except Exception as e:
+                log.append(f"  oauth2/auth failed: {e}")
+
+            # Попытка B: POST oauth2/auth с silent_token
+            if silent_token:
+                log.append("[5b] POST id.vk.ru/oauth2/auth (silent_token exchange)")
+                try:
+                    r_exchange = s.post(
+                        "https://id.vk.ru/oauth2/auth",
+                        data={
+                            "response_type": "code",
+                            "client_id": TWINBY_VK_APP_ID,
+                            "redirect_uri": TWINBY_REDIRECT_URI,
+                            "code_challenge": code_challenge,
+                            "code_challenge_method": "s256",
+                            "state": state,
+                            "scope": "",
+                            "token": silent_token,
+                            "uuid": vk_uuid,
+                            "hash": vk_hash,
+                            "v": "1.3.0",
+                            "sdk_type": "vkid",
+                            "app_id": VK_ID_APP_ID,
+                        },
+                        headers={
+                            "Origin": "https://id.vk.ru",
+                            "Referer": "https://id.vk.ru/",
+                            "Content-Type": "application/x-www-form-urlencoded",
+                        },
+                    )
+                    log.append(f"  → {r_exchange.status_code}")
+
+                    if r_exchange.status_code in (301, 302, 303, 307, 308):
+                        loc = r_exchange.headers.get("location", "")
+                        log.append(f"  → redirect: {loc[:120]}")
+                        code = _extract_code_from_url(loc)
                         if code:
-                            log.append(f"  Code from grant: {code[:30]}...")
+                            log.append(f"  Code from exchange redirect: {code[:30]}...")
                             return _success(code, code_verifier, vk_device_id, state, log)
-                    except Exception as e:
-                        log.append(f"  Grant request failed: {e}")
 
-                for pattern in [
-                    r'access_token=([a-zA-Z0-9._-]+)',
-                    r'code=([a-zA-Z0-9._-]+)',
-                    r'"code"\s*:\s*"([^"]+)"',
-                ]:
-                    m = re.search(pattern, html_legacy)
-                    if m:
-                        val = m.group(1)
-                        if "code" in pattern or val.startswith("vk2."):
-                            log.append(f"  Found in legacy HTML: {val[:30]}...")
-                            return _success(val, code_verifier, vk_device_id, state, log)
+                    # JSON ответ
+                    try:
+                        d_ex = r_exchange.json()
+                        log.append(f"  Exchange response: {json.dumps(d_ex, ensure_ascii=False)[:300]}")
 
-            # ═══════════════════════════════════════════════════════════
-            # Не удалось
-            # ═══════════════════════════════════════════════════════════
-            cookies_str = "; ".join(f"{c.name}={c.value[:20]}..." for c in s.cookies.jar)
+                        # Может вернуть redirect_uri с code
+                        redir = d_ex.get("redirect_uri", "")
+                        if redir:
+                            code = _extract_code_from_url(redir)
+                            if code:
+                                log.append(f"  Code from exchange JSON: {code[:30]}...")
+                                return _success(code, code_verifier, vk_device_id, state, log)
+
+                        # Или code прямо в response
+                        code_val = d_ex.get("code", "")
+                        if code_val:
+                            log.append(f"  Code from exchange: {code_val[:30]}...")
+                            return _success(code_val, code_verifier, vk_device_id, state, log)
+                    except Exception:
+                        # Может быть HTML
+                        html_ex = r_exchange.text
+                        m = re.search(r'code=([a-zA-Z0-9._-]+)', html_ex)
+                        if m:
+                            return _success(m.group(1), code_verifier, vk_device_id, state, log)
+                except Exception as e:
+                    log.append(f"  Exchange failed: {e}")
+
+            # Попытка C: Через oauth.vk.ru/authorize (legacy)
+            if vk_access_token:
+                log.append("[5c] GET oauth.vk.ru/authorize (legacy, with access_token)")
+                try:
+                    legacy_params = {
+                        "client_id": TWINBY_VK_APP_ID,
+                        "redirect_uri": TWINBY_REDIRECT_URI,
+                        "response_type": "code",
+                        "scope": "",
+                        "state": state,
+                        "code_challenge": code_challenge,
+                        "code_challenge_method": "s256",
+                        "v": "5.199",
+                        "access_token": vk_access_token,
+                    }
+                    r_legacy = s.get("https://oauth.vk.ru/authorize", params=legacy_params)
+                    log.append(f"  → {r_legacy.status_code}")
+
+                    if r_legacy.status_code in (301, 302, 303, 307, 308):
+                        loc = r_legacy.headers.get("location", "")
+                        log.append(f"  → redirect: {loc[:120]}")
+                        code = _extract_code_from_url(loc)
+                        if code:
+                            log.append(f"  Code from legacy: {code[:30]}...")
+                            return _success(code, code_verifier, vk_device_id, state, log)
+
+                    if r_legacy.status_code == 200:
+                        html_l = r_legacy.text
+                        # grant_access
+                        gm = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', html_l)
+                        if not gm:
+                            gm = re.search(r'<form[^>]+action="([^"]+grant_access[^"]*)"', html_l)
+                        if gm:
+                            grant_url = gm.group(1).replace("&amp;", "&")
+                            if not grant_url.startswith("http"):
+                                grant_url = f"https://oauth.vk.ru{grant_url}"
+                            log.append(f"  Grant URL: {grant_url[:100]}")
+                            r_grant = s.get(grant_url)
+                            if r_grant.status_code in (301, 302, 303, 307, 308):
+                                loc2 = r_grant.headers.get("location", "")
+                                code = _extract_code_from_url(loc2)
+                                if code:
+                                    return _success(code, code_verifier, vk_device_id, state, log)
+
+                        for pat in [r'"code"\s*:\s*"([^"]+)"', r'code=([a-zA-Z0-9._-]+)']:
+                            m = re.search(pat, html_l)
+                            if m and len(m.group(1)) > 20:
+                                return _success(m.group(1), code_verifier, vk_device_id, state, log)
+                except Exception as e:
+                    log.append(f"  Legacy auth failed: {e}")
+
+            # Попытка D: POST id.vk.ru/oauth2/auth без silent_token (с cookies)
+            log.append("[5d] POST id.vk.ru/oauth2/auth (cookies only)")
+            try:
+                r_cookies = s.post(
+                    "https://id.vk.ru/oauth2/auth",
+                    data={
+                        "response_type": "code",
+                        "client_id": TWINBY_VK_APP_ID,
+                        "redirect_uri": TWINBY_REDIRECT_URI,
+                        "code_challenge": code_challenge,
+                        "code_challenge_method": "s256",
+                        "state": state,
+                        "scope": "",
+                        "v": "1.3.0",
+                        "sdk_type": "vkid",
+                        "app_id": VK_ID_APP_ID,
+                    },
+                    headers={
+                        "Origin": "https://id.vk.ru",
+                        "Referer": "https://id.vk.ru/",
+                    },
+                )
+                log.append(f"  → {r_cookies.status_code}")
+
+                if r_cookies.status_code in (301, 302, 303, 307, 308):
+                    loc = r_cookies.headers.get("location", "")
+                    code = _extract_code_from_url(loc)
+                    if code:
+                        return _success(code, code_verifier, vk_device_id, state, log)
+
+                try:
+                    d_cook = r_cookies.json()
+                    log.append(f"  Response: {json.dumps(d_cook, ensure_ascii=False)[:300]}")
+                    redir = d_cook.get("redirect_uri", "")
+                    if redir:
+                        code = _extract_code_from_url(redir)
+                        if code:
+                            return _success(code, code_verifier, vk_device_id, state, log)
+                    code_val = d_cook.get("code", "")
+                    if code_val:
+                        return _success(code_val, code_verifier, vk_device_id, state, log)
+                except Exception:
+                    pass
+            except Exception as e:
+                log.append(f"  Cookies-only auth failed: {e}")
+
+            # Всё провалилось
+            cookies_str = "; ".join(f"{c.name}={c.value[:15]}..." for c in s.cookies.jar)
             log.append(f"Cookies: {cookies_str}")
 
             return {
                 "ok": False,
-                "error": "Не удалось получить authorization code для Twinby.",
+                "error": "Не удалось получить authorization code для Twinby",
                 "log": log,
             }
 
@@ -646,7 +888,7 @@ def _success(code: str, code_verifier: str, device_id: str, state: str, log: lis
 
 
 # ---------------------------------------------------------------------------
-# Twinby auth v3: отправить VK code на Twinby
+# Twinby auth v3: VK code → Twinby JWT
 # ---------------------------------------------------------------------------
 
 def twinby_auth_v3(
@@ -657,9 +899,7 @@ def twinby_auth_v3(
     redirect_uri: str = TWINBY_REDIRECT_URI,
     proxy: str = "",
 ) -> dict:
-    """
-    Авторизация в Twinby через v3 endpoint.
-    """
+    """Отправить VK auth code на Twinby → JWT."""
     body = {
         "provider": "vk",
         "options": {
@@ -689,7 +929,7 @@ def twinby_auth_v3(
             **post_kw,
         )
         if resp.status_code >= 400:
-            return {"ok": False, "error": f"Twinby auth v3: {resp.status_code} {resp.text[:300]}"}
+            return {"ok": False, "error": f"Twinby v3: {resp.status_code} {resp.text[:300]}"}
         d = resp.json()
         at = d.get("accessToken", "")
         if not at:
@@ -703,34 +943,14 @@ def twinby_auth_v3(
 # Полный цикл: VK login → code → Twinby JWT
 # ---------------------------------------------------------------------------
 
-def _normalize_proxy(raw: str) -> str:
-    """ip:port:user:pass → http://user:pass@ip:port. Уже http:// — как есть."""
-    raw = raw.strip()
-    if not raw:
-        return ""
-    if raw.startswith(("http://", "https://", "socks")):
-        return raw
-    parts = raw.split(":")
-    if len(parts) >= 4:
-        ip, port, user = parts[0], parts[1], parts[2]
-        pwd = ":".join(parts[3:])
-        return f"http://{user}:{pwd}@{ip}:{port}"
-    elif len(parts) == 2:
-        return f"http://{parts[0]}:{parts[1]}"
-    return raw
-
-
 def full_auth(login: str, password: str, rucaptcha_key: str = "", proxy: str = "") -> dict:
-    """
-    Полный цикл авторизации: VK browser login → code → Twinby JWT.
-    """
+    """VK ID login → auth code → Twinby JWT."""
     proxy = _normalize_proxy(proxy)
-    # Шаг 1: получить VK auth code
+
     vk_result = get_vk_auth_code(login, password, rucaptcha_key, proxy=proxy)
     if not vk_result.get("ok"):
         return vk_result
 
-    # Шаг 2: авторизоваться в Twinby
     tw_result = twinby_auth_v3(
         code=vk_result["code"],
         code_verifier=vk_result["code_verifier"],
