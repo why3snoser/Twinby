@@ -28,6 +28,7 @@ from curl_cffi import CurlHttpVersion
 
 import twinby_onboard as tw
 from cities import RUSSIAN_CITIES, get_cities_json
+import vk_auth
 
 app = Flask(__name__)
 
@@ -704,7 +705,8 @@ INTEREST_GROUPS = {
 LANGUAGES = [["753298335899156481", "Азербайджанский"], ["753298335914754049", "Албанский"], ["753298335928254465", "Амхарский"], ["753298335940608001", "Английский"], ["753298335953027073", "Арабский"], ["753298335970492417", "Армянский"], ["753298335984877569", "Африкаанс"], ["753298335999787009", "Белорусский"], ["753298336015220737", "Бенгальский"], ["753298336028360705", "Бирманский"], ["753298336040550401", "Болгарский"], ["753298336052674561", "Боснийский"], ["753298336068042753", "Валлийский"], ["753298336083247105", "Венгерский"], ["753298336097435649", "Вьетнамский"], ["753298336113229825", "Голландский"], ["753298336127254529", "Греческий"], ["753298336144916481", "Грузинский"], ["753298336162119681", "Гуджарати"], ["753298336188399617", "Датский"], ["753298336203833345", "Иврит"], ["753298336217792513", "Индонезийский"], ["753298336233979905", "Ирландский"], ["753298336247283713", "Итальянский"], ["753298336264192001", "Исландский"], ["753298336278642689", "Испанский"], ["753298336295059457", "Казахский"], ["753298336309313537", "Каталанский"], ["753298336322912257", "Киргизский"], ["753298336336412673", "Китайский"], ["753298336349650945", "Корейский"], ["753298336363118593", "Кхмерский"], ["753298336378126337", "Лаосский"], ["753298336394706945", "Латышский"], ["753298336409714689", "Литовский"], ["753298336424820737", "Люксембургский"], ["753298336437731329", "Малагасийский"], ["753298336450838529", "Малазийский"], ["753298336465551361", "Мальтийский"], ["753298336485310465", "Македонский"], ["753298336504643585", "Монгольский"], ["753298336517685249", "Немецкий"], ["753298336534921217", "Непальский"], ["753298336548651009", "Норвежский"], ["753298336562511873", "Пенджабский"], ["753298336578076673", "Персидский"], ["753298336592461825", "Польский"], ["753298336605634561", "Португальский"], ["753298336621527041", "Румынский"], ["753298336634404865", "Русский"], ["753298336648462337", "Сербский"], ["753298336662749185", "Сингальский"], ["753298336678182913", "Словацкий"], ["753298336690077697", "Словенский"], ["753298336701808641", "Суахили"], ["753298336715767809", "Таджикский"], ["753298336730218497", "Тайский"], ["753298336746242049", "Филиппинский"], ["753298336759578625", "Тамильский"], ["753298336772685825", "Татарский"], ["753298336786776065", "Телугу"], ["753298336799326209", "Турецкий"], ["753298336817840129", "Узбекский"], ["753298336830914561", "Украинский"], ["753298336843923457", "Урду"], ["753298336896516097", "Финский"], ["753298336957661185", "Французский"], ["753298337057603585", "Хинди"], ["753298337251459073", "Хорватский"], ["753298337451933697", "Чешский"], ["753298337651490817", "Шведский"], ["753298337851015169", "Эстонский"], ["753298338052440065", "Японский"]]
 # -----------------------------------------------------------------------------------------------
 
-AUTH_VK_PATH = "/api/auth/v2/oauth/by-token"   # прямой VK access token → JWT
+AUTH_VK_V2_PATH = "/api/auth/v2/oauth/by-token"  # legacy, НЕ РАБОТАЕТ для онбординга
+AUTH_VK_V3_PATH = "/api/auth/v3/oauth/by-token"  # VK ID PKCE — рабочий
 DATING_SEARCH_PATH = "/api/users/search/?size=50"  # GET → список анкет для свайпа (confirmed via mitmproxy)
 USERS_PUBLIC_PATH = "/api/users/{uid}/"           # GET → публичный профиль по ID
 
@@ -723,6 +725,69 @@ def _save_accounts(data: dict):
     ACCOUNTS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 ACCOUNTS: dict[str, dict] = _load_accounts()
+
+
+def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
+                     rucaptcha_key: str = "") -> dict:
+    """
+    Универсальная авторизация VK → Twinby JWT.
+
+    Приоритет:
+      1. Если есть vk_login + vk_pass → v3 (PKCE) через vk_auth модуль.
+      2. Если только vk_token → fallback на v2 (legacy, онбординг может не работать).
+
+    Returns: {"ok": True, "jwt": "...", "log": [...]}
+             или {"ok": False, "error": "...", "log": [...]}
+    """
+    import httpx
+    log = []
+
+    # ---- Стратегия 1: v3 через VK OAuth PKCE (если есть пароль) ----
+    if vk_login and vk_pass:
+        log.append(f"[AUTH] v3 PKCE: login={vk_login[:4]}***")
+        result = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key)
+        if result.get("ok"):
+            log.extend(result.get("log", []))
+            log.append(f"[AUTH] v3 OK: JWT={result['jwt'][:20]}...")
+            return {"ok": True, "jwt": result["jwt"], "log": log,
+                    "refresh_token": result.get("refresh_token", "")}
+        else:
+            log.extend(result.get("log", []))
+            err = result.get("error", "unknown")
+            log.append(f"[AUTH] v3 FAILED: {err}")
+            # Если капча — пробрасываем наверх
+            if err == "need_captcha":
+                return result
+            # Пробуем fallback на v2 если есть vk_token
+            if vk_token:
+                log.append("[AUTH] Fallback на v2 с токеном...")
+            else:
+                return {"ok": False, "error": f"VK auth v3 failed: {err}", "log": log}
+
+    # ---- Стратегия 2: v2 (legacy) через VK access token ----
+    if vk_token:
+        log.append(f"[AUTH] v2 legacy: token={vk_token[:20]}...")
+        try:
+            resp = httpx.post(
+                f"{tw.BASE}{AUTH_VK_V2_PATH}",
+                json={"provider": "vk", "token": vk_token},
+                headers={"User-Agent": tw.UA, "Accept": "application/json",
+                         "Content-Type": "application/json"},
+                timeout=30,
+            )
+            if resp.status_code >= 400:
+                return {"ok": False, "error": f"Auth v2: {resp.status_code} {resp.text[:300]}", "log": log}
+            rd = resp.json()
+            jwt_token = rd.get("accessToken", "")
+            if not jwt_token:
+                return {"ok": False, "error": f"Нет accessToken: {json.dumps(rd, ensure_ascii=False)[:300]}", "log": log}
+            log.append(f"[AUTH] v2 OK: JWT={jwt_token[:20]}... (⚠️ онбординг может не работать)")
+            return {"ok": True, "jwt": jwt_token, "log": log, "v2_warning": True}
+        except Exception as e:
+            return {"ok": False, "error": f"Auth v2 exception: {e}", "log": log}
+
+    return {"ok": False, "error": "Нет VK логина/пароля и нет токена", "log": log}
+
 
 def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
     """Layout wrapper. tab = 'main'|'accounts'|'swipe'."""
@@ -998,7 +1063,7 @@ PAGE_ACCOUNTS = """
     <input type="text" name="label" value="" placeholder="например: main или test1" required>
     <label class="l">VK Access Token</label>
     <textarea name="vk_token" required placeholder="vk1.a.SQVIJP3j-7rv..."></textarea>
-    <p class="hint">Софт сам отправит POST /api/auth/v2/oauth/by-token с provider=vk и получит JWT.
+    <p class="hint">Авторизация через VK OAuth v3 (PKCE) + fallback v2. Формат: id:pass:token
       Полученный токен можно скопировать и вставить на вкладке Онбординг или Свайпы.</p>
     <button class="go" type="submit" name="action" value="add">Получить JWT</button>
   </fieldset>
@@ -1528,22 +1593,16 @@ def accounts_page():
                 error = "Вставь VK access token"
             else:
                 try:
-                    tee(f"POST {AUTH_VK_PATH} (provider=vk)")
                     import httpx
-                    resp = httpx.post(
-                        f"{tw.BASE}{AUTH_VK_PATH}",
-                        json={"provider": "vk", "token": vk_token},
-                        headers={"User-Agent": tw.UA, "Accept": "application/json",
-                                 "Content-Type": "application/json"},
-                        timeout=30,
-                    )
-                    tee(f"Статус: {resp.status_code}")
-                    if resp.status_code >= 400:
-                        raise RuntimeError(f"Сервер вернул {resp.status_code}: {resp.text[:400]}")
-                    data = resp.json()
-                    jwt_token = data.get("accessToken", "")
-                    if not jwt_token:
-                        raise RuntimeError(f"В ответе нет accessToken: {json.dumps(data, ensure_ascii=False)[:400]}")
+                    tee(f"Auth VK → JWT (v3/v2)")
+                    settings = _load_settings()
+                    rucaptcha_key = settings.get("rucaptcha_key", "")
+                    auth = _auth_vk_to_jwt(vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+                    for line in auth.get("log", []):
+                        tee(line)
+                    if not auth.get("ok"):
+                        raise RuntimeError(auth.get("error", "Auth failed"))
+                    jwt_token = auth["jwt"]
 
                     # Попробуем получить имя и ID профиля
                     user_name = ""
@@ -2020,27 +2079,27 @@ def save_presets():
 
 @app.route("/preset-register", methods=["POST"])
 def preset_register():
-    """Зарегать анкету через VK токен, вернуть JWT + user info."""
+    """Зарегать анкету через VK → JWT + user info. Поддержка v3 (PKCE) + fallback v2."""
     import httpx
     data = request.get_json(force=True)
     vk_token = (data.get("vk_token") or "").strip()
-    if not vk_token:
-        return jsonify({"ok": False, "error": "Нет VK токена"})
+    vk_login = (data.get("vk_id") or "").strip()
+    vk_pass = (data.get("vk_pass") or "").strip()
+
+    # Загрузить RuCaptcha ключ из настроек
+    settings = _load_settings()
+    rucaptcha_key = settings.get("rucaptcha_key", "")
+
+    if not vk_login and not vk_token:
+        return jsonify({"ok": False, "error": "Нет VK логина/токена"})
 
     try:
-        resp = httpx.post(
-            f"{tw.BASE}{AUTH_VK_PATH}",
-            json={"provider": "vk", "token": vk_token},
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Content-Type": "application/json"},
-            timeout=30,
-        )
-        if resp.status_code >= 400:
-            return jsonify({"ok": False, "error": f"Статус {resp.status_code}: {resp.text[:300]}"})
-        rd = resp.json()
-        jwt_token = rd.get("accessToken", "")
-        if not jwt_token:
-            return jsonify({"ok": False, "error": f"Нет accessToken: {json.dumps(rd, ensure_ascii=False)[:300]}"})
+        auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+        if not auth.get("ok"):
+            return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
+                            "log": auth.get("log", [])})
+        jwt_token = auth["jwt"]
 
         # Получим имя и ID
         user_name = ""
@@ -2074,7 +2133,8 @@ def preset_register():
             except Exception:
                 pass
 
-        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name})
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name,
+                        "auth_log": auth.get("log", [])})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -2343,10 +2403,11 @@ function logMsg(msg){
 
 function registerAnketa(city){
   const p=PRESETS[OPEN_PRESET];
-  if(!p||!p.vk_token){alert('Укажи VK токен в пресете');return;}
+  if(!p||(!p.vk_token&&!p.vk_id)){alert('Укажи VK данные (id:pass:token) в пресете');return;}
   logMsg('Регистрирую анкету '+city+'...');
   fetch('/preset-register',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({vk_token:p.vk_token,city:city,
+    body:JSON.stringify({vk_token:p.vk_token||'',vk_id:p.vk_id||'',vk_pass:p.vk_pass||'',
+      city:city,
       latitude:(p.ankety[city]||{}).latitude||'',
       longitude:(p.ankety[city]||{}).longitude||''})})
   .then(r=>r.json()).then(d=>{
@@ -2355,7 +2416,11 @@ function registerAnketa(city){
       a.jwt=d.jwt||'';a.user_id=d.user_id||'';a.name=d.name||'';
       savePresets(renderPresetDetail);
       logMsg(city+': JWT получен ('+d.user_id+' '+d.name+')');
-    }else{logMsg(city+': ошибка — '+(d.error||'unknown'));}
+      if(d.auth_log)d.auth_log.forEach(l=>logMsg('  '+l));
+    }else{
+      logMsg(city+': ошибка — '+(d.error||'unknown'));
+      if(d.log)d.log.forEach(l=>logMsg('  '+l));
+    }
   }).catch(e=>logMsg(city+': fetch error — '+e));
 }
 
@@ -2410,27 +2475,27 @@ def api_accounts_list():
 
 @app.route("/api/accounts", methods=["POST"])
 def api_accounts_add():
-    """Добавить аккаунт через VK токен. JSON: {label, vk_token}"""
+    """Добавить аккаунт через VK. JSON: {label, vk_token, vk_id?, vk_pass?}"""
     import httpx
     data = request.get_json(force=True)
     label = (data.get("label") or "").strip()
     vk_token = (data.get("vk_token") or "").strip()
-    if not label or not vk_token:
-        return jsonify({"ok": False, "error": "need label and vk_token"})
+    vk_login = (data.get("vk_id") or "").strip()
+    vk_pass = (data.get("vk_pass") or "").strip()
+    if not label or (not vk_token and not vk_login):
+        return jsonify({"ok": False, "error": "need label and vk_token or vk_id+vk_pass"})
+
+    settings = _load_settings()
+    rucaptcha_key = settings.get("rucaptcha_key", "")
+
     try:
-        resp = httpx.post(
-            f"{tw.BASE}{AUTH_VK_PATH}",
-            json={"provider": "vk", "token": vk_token},
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Content-Type": "application/json"},
-            timeout=30,
-        )
-        if resp.status_code >= 400:
-            return jsonify({"ok": False, "error": f"Статус {resp.status_code}: {resp.text[:300]}"})
-        rd = resp.json()
-        jwt_token = rd.get("accessToken", "")
-        if not jwt_token:
-            return jsonify({"ok": False, "error": "Нет accessToken в ответе"})
+        auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+        if not auth.get("ok"):
+            return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
+                            "log": auth.get("log", [])})
+        jwt_token = auth["jwt"]
+
         user_name, user_id = "", ""
         try:
             me_resp = httpx.get(
@@ -2605,30 +2670,32 @@ def api_cities():
 
 @app.route("/api/register-account", methods=["POST"])
 def api_register_account():
-    """Полная регистрация: VK token → JWT + онбординг + профиль + локация + фильтры."""
+    """Полная регистрация: VK → JWT (v3 PKCE) + онбординг + профиль + локация + фильтры."""
     import httpx
     data = request.get_json(force=True)
     vk_token = (data.get("vk_token") or "").strip()
-    if not vk_token:
-        return jsonify({"ok": False, "error": "Нет VK токена"})
+    vk_login = (data.get("vk_id") or "").strip()
+    vk_pass = (data.get("vk_pass") or "").strip()
+
+    if not vk_login and not vk_token:
+        return jsonify({"ok": False, "error": "Нет VK логина/токена"})
+
+    settings = _load_settings()
+    rucaptcha_key = settings.get("rucaptcha_key", "")
 
     try:
-        # 1) Авторизация через VK
-        resp = httpx.post(
-            f"{tw.BASE}{AUTH_VK_PATH}",
-            json={"provider": "vk", "token": vk_token},
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Content-Type": "application/json"},
-            timeout=30,
-        )
-        if resp.status_code >= 400:
-            return jsonify({"ok": False, "error": f"Auth: {resp.status_code} {resp.text[:300]}"})
-        rd = resp.json()
-        jwt_token = rd.get("accessToken", "")
-        if not jwt_token:
-            return jsonify({"ok": False, "error": f"Нет accessToken: {json.dumps(rd, ensure_ascii=False)[:300]}"})
+        # 1) Авторизация через VK (v3 PKCE или fallback v2)
+        auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+        if not auth.get("ok"):
+            return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
+                            "log": auth.get("log", [])})
+        jwt_token = auth["jwt"]
 
         log_buf = io.StringIO()
+        # Записать auth лог
+        for line in auth.get("log", []):
+            log_buf.write(line + "\n")
         tee = lambda m: log_buf.write(m + "\n")
         c = _make_web_client(jwt_token, False, tee)
 
@@ -2811,28 +2878,26 @@ def api_check_status():
 
 @app.route("/api/recover-account", methods=["POST"])
 def api_recover_account():
-    """Восстановление: VK token → JWT → /api/users/me/ → данные аккаунта."""
+    """Восстановление: VK → JWT (v3 PKCE) → /api/users/me/ → данные аккаунта."""
     import httpx
     data = request.get_json(force=True)
     vk_token = (data.get("vk_token") or "").strip()
-    if not vk_token:
-        return jsonify({"ok": False, "error": "Нет VK токена"})
+    vk_login = (data.get("vk_id") or "").strip()
+    vk_pass = (data.get("vk_pass") or "").strip()
+
+    if not vk_login and not vk_token:
+        return jsonify({"ok": False, "error": "Нет VK логина/токена"})
+
+    settings = _load_settings()
+    rucaptcha_key = settings.get("rucaptcha_key", "")
 
     try:
-        # Auth via VK token
-        resp = httpx.post(
-            f"{tw.BASE}{AUTH_VK_PATH}",
-            json={"provider": "vk", "token": vk_token},
-            headers={"User-Agent": tw.UA, "Accept": "application/json",
-                     "Content-Type": "application/json"},
-            timeout=30,
-        )
-        if resp.status_code >= 400:
-            return jsonify({"ok": False, "error": f"Auth: {resp.status_code} {resp.text[:300]}"})
-        rd = resp.json()
-        jwt_token = rd.get("accessToken", "")
-        if not jwt_token:
-            return jsonify({"ok": False, "error": "Нет accessToken"})
+        auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
+                               vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+        if not auth.get("ok"):
+            return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
+                            "log": auth.get("log", [])})
+        jwt_token = auth["jwt"]
 
         # Get account info
         me_resp = httpx.get(
@@ -2897,6 +2962,26 @@ def api_rucaptcha_balance():
             return jsonify({"ok": False, "error": d.get("request", "Неизвестная ошибка")})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/test-vk-auth", methods=["POST"])
+def api_test_vk_auth():
+    """Тест VK auth v3: проверить получение кода + JWT без онбординга.
+    JSON: {vk_id, vk_pass} или {vk_token}"""
+    data = request.get_json(force=True)
+    vk_login = (data.get("vk_id") or "").strip()
+    vk_pass = (data.get("vk_pass") or "").strip()
+    vk_token = (data.get("vk_token") or "").strip()
+
+    settings = _load_settings()
+    rucaptcha_key = settings.get("rucaptcha_key", "")
+
+    if not vk_login and not vk_token:
+        return jsonify({"ok": False, "error": "Нужен vk_id+vk_pass или vk_token"})
+
+    result = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
+                             vk_token=vk_token, rucaptcha_key=rucaptcha_key)
+    return jsonify(result)
 
 
 if __name__ == "__main__":
