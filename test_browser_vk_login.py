@@ -1168,31 +1168,26 @@ def run_test_twinby_web_ui(login: str, password: str, proxy_raw: str, rucaptcha_
                 f"&state={oauth_state}"
             )
             log("[1] page.goto id.vk.ru/authorize")
-            page.goto(authorize_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1500)
+            page.goto(authorize_url, wait_until="domcontentloaded", timeout=45000)
             log(f"  URL: {page.url[:200]}")
 
-            # ── Шаг 2: ввести телефон в реальное поле и нажать "Продолжить" ──
-            log("[2] вводим телефон в форму")
+            # domcontentloaded can precede React hydration; wait for the visible input.
+            log("[2] waiting for visible phone field (up to 45 seconds)")
             phone_input = page.locator(
-                "input[type='tel']:visible, input[inputmode='tel']:visible"
+                "input[type='tel']:visible, input[inputmode='tel']:visible, "
+                "input[name='login']:visible, input[autocomplete='username']:visible"
             ).first
             try:
+                phone_input.wait_for(state="visible", timeout=45000)
                 phone_input.click(timeout=5000)
                 phone_input.press("Control+A")
                 phone_input.press("Backspace")
                 phone_input.fill("")
-                # fill() ставит значение программно — маска телефона (React,
-                # слушает keydown/input посимвольно) могла не заметить его,
-                # и кнопка осталась disabled. Печатаем по символу (slowly=True),
-                # как живой ввод, чтобы маска отработала и состояние React
-                # обновилось нормально.
                 phone_input.press_sequentially(f"+{login.lstrip('+')}", delay=80)
-                log("  поле телефона очищено и номер введён посимвольно")
+                log("  Phone number entered character by character")
             except Exception as e:
-                dump = page.inner_text("body")[:600] if True else ""
-                return {"ok": False, "error": f"не нашли/не заполнили поле телефона: {e}",
-                        "page_text": dump}
+                dump = page.inner_text("body")[:600]
+                return {"ok": False, "error": f"Phone login field not found or could not be filled: {type(e).__name__}", "page_text": dump}
 
             clicked, info = _click_continue_when_enabled(page, ["Продолжить", "Continue"], max_wait_s=15)
             if clicked:
@@ -1212,14 +1207,10 @@ def run_test_twinby_web_ui(login: str, password: str, proxy_raw: str, rucaptcha_
             # ── Шаг 4: пароль в реальное поле, клик "Продолжить" ──
             log("[3] ищем поле пароля")
             pwd_input = page.locator("input[type='password']:visible").first
-            found_pwd = False
-            for _ in range(10):
-                if pwd_input.count() > 0:
-                    found_pwd = True
-                    break
-                page.wait_for_timeout(1000)
-            if not found_pwd:
-                return {"ok": False, "error": "поле пароля не появилось за 10 сек",
+            try:
+                pwd_input.wait_for(state="visible", timeout=30000)
+            except Exception:
+                return {"ok": False, "error": "Password field did not appear within 30 seconds.",
                         "page_text": page.inner_text("body")[:600]}
 
             pwd_input.click(timeout=5000)

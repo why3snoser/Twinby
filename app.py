@@ -813,7 +813,7 @@ def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
 
     if vk_login and vk_pass:
         try:
-            from test_browser_vk_login import run_test_twinby_web
+            from test_browser_vk_login import run_test_twinby_web_ui
         except Exception as exc:
             return {"ok": False,
                     "error": f"Browser VK auth dependencies unavailable: {type(exc).__name__}: {exc}",
@@ -824,7 +824,7 @@ def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
             # Only one synchronous Chromium login runs at a time in this local app.
             with _VK_BROWSER_AUTH_LOCK:
                 with contextlib.redirect_stdout(captured):
-                    result = run_test_twinby_web(
+                    result = run_test_twinby_web_ui(
                         login=vk_login,
                         password=vk_pass,
                         proxy_raw=proxy,
@@ -837,7 +837,9 @@ def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
         raw_log = captured.getvalue()
         for line in raw_log.splitlines():
             if any(marker in line for marker in (
-                "[route] outgoing VK authorize", "[oauth-check]", "[request-event/pre-route"
+                "[mode] twinby-web-ui", "[1] page.goto", "waiting for visible phone field",
+                "[3] waiting for password field", "[oauth-check]", "VK ID login accepted",
+                "Captured Twinby redirect", "Phone login field", "Password field"
             )):
                 log.append(line.strip())
 
@@ -859,8 +861,12 @@ def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
             safe_error = "VK page navigated during a browser API request."
         elif "missing device_id" in error_text or "state mismatch" in error_text:
             safe_error = error_text
+        elif "Phone login field" in error_text:
+            safe_error = "VK login form did not become visible within 45 seconds."
+        elif "Password field" in error_text:
+            safe_error = "VK password form did not become visible within 30 seconds."
         else:
-            safe_error = "Browser VK ID PKCE flow failed; review the safe OAuth checks in the log."
+            safe_error = "Browser VK ID UI flow failed; review the safe stage log."
         log.append("[AUTH] browser VK ID PKCE flow failed")
         return {"ok": False, "error": safe_error, "log": log}
 
