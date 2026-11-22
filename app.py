@@ -832,12 +832,17 @@ def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
                         headful=True,
                     )
         except Exception as exc:
-            result = {"ok": False, "error": f"browser auth raised {type(exc).__name__}"}
+            detail = str(exc)
+            for secret in (vk_login, vk_pass, rucaptcha_key, proxy):
+                if secret:
+                    detail = detail.replace(secret, "<redacted>")
+            result = {"ok": False,
+                      "error": f"browser auth raised {type(exc).__name__}: {detail[:300]}"}
 
         raw_log = captured.getvalue()
         for line in raw_log.splitlines():
             if any(marker in line for marker in (
-                "[mode] twinby-web-ui", "[1] page.goto", "waiting for visible phone field",
+                "[mode] twinby-web-ui", "[browser]", "[1] page.goto", "waiting for visible phone field",
                 "[3] waiting for password field", "[oauth-check]", "VK ID login accepted",
                 "Captured Twinby redirect", "Phone login field", "Password field"
             )):
@@ -865,6 +870,8 @@ def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
             safe_error = "VK login form did not become visible within 45 seconds."
         elif "Password field" in error_text:
             safe_error = "VK password form did not become visible within 30 seconds."
+        elif "browser auth raised" in error_text:
+            safe_error = error_text
         else:
             safe_error = "Browser VK ID UI flow failed; review the safe stage log."
         log.append("[AUTH] browser VK ID PKCE flow failed")

@@ -1148,8 +1148,15 @@ def run_test_twinby_web_ui(login: str, password: str, proxy_raw: str, rucaptcha_
         launch_kwargs = {"headless": not headful}
         if pw_proxy:
             launch_kwargs["proxy"] = pw_proxy
-        browser = p.chromium.launch(**launch_kwargs)
+        log("[browser] launching Chromium")
+        try:
+            browser = p.chromium.launch(**launch_kwargs)
+        except Exception as exc:
+            log(f"[browser] Chromium launch failed: {type(exc).__name__}")
+            raise
+        log("[browser] Chromium launched")
         page = browser.new_page(user_agent=UA_BROWSER)
+        log("[browser] page created")
 
         captured_redirect = {}
 
