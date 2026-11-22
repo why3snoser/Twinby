@@ -127,6 +127,10 @@ legend{padding:0 6px;font-size:13px;color:var(--accent);font-weight:600}
       <label>О себе</label>
       <textarea id="sAbout" rows="3" oninput="saveSettings()"></textarea>
     </div>
+    <label class="mt" style="display:flex;align-items:flex-start;gap:8px">
+      <input type="checkbox" id="acceptTwinbyTerms" style="margin-top:4px">
+      <span>&#1071; &#1087;&#1088;&#1080;&#1085;&#1080;&#1084;&#1072;&#1102; &#1055;&#1086;&#1083;&#1080;&#1090;&#1080;&#1082;&#1091; &#1082;&#1086;&#1085;&#1092;&#1080;&#1076;&#1077;&#1085;&#1094;&#1080;&#1072;&#1083;&#1100;&#1085;&#1086;&#1089;&#1090;&#1080; &#1080; &#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1100;&#1089;&#1082;&#1086;&#1077; &#1089;&#1086;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; Twinby &#1080; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1072;&#1102;, &#1095;&#1090;&#1086; &#1084;&#1085;&#1077; &#1080;&#1089;&#1087;&#1086;&#1083;&#1085;&#1080;&#1083;&#1086;&#1089;&#1100; 18 &#1083;&#1077;&#1090;.</span>
+    </label>
   </fieldset>
 
   <fieldset>
@@ -137,7 +141,7 @@ legend{padding:0 6px;font-size:13px;color:var(--accent);font-weight:600}
         <label class="file-btn mt">
           <svg viewBox="0 0 24 24"><path d="M19 7v2.99s-1.99.01-2 0V7h-3s.01-1.99 0-2h3V2h2v3h3v2h-3zm-3 4V8h-3V5H5a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2v-8h-3zM5 19l3-4 2 3 3-4 4 5H5z"/></svg>
           Выбрать фото
-          <input type="file" id="photoFiles" multiple accept="image/*" onchange="handlePhotoUpload()">
+          <input type="file" id="photoFiles" multiple accept="image/jpeg,image/png,image/webp" onchange="handlePhotoUpload()">
         </label>
         <div id="photoPreview" class="flex flex-wrap mt" style="gap:6px"></div>
       </div>
@@ -682,6 +686,8 @@ async function registerPreset(presetName) {
   }
   const selCities = SETTINGS.selected_cities || [];
   if (!selCities.length) { alert('Выберите города в настройках'); return; }
+  if (!document.getElementById('acceptTwinbyTerms').checked) { alert('Accept Twinby terms and confirm age 18+ before registration.'); return; }
+  if (!PHOTOS.length) { alert('Add at least one photo for the profile onboarding step.'); return; }
 
   showLog();
   logMsg(`=== Регистрация "${presetName}": ${need} аккаунтов ===`);
@@ -700,7 +706,8 @@ async function registerPreset(presetName) {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
           vk_token:vk.token, vk_id:vk.id, vk_pass:vk.pass,
-          proxy: proxy,
+          proxy: proxy, accept_twinby_terms:true,
+          first_photo_data_url:PHOTOS[0].dataUrl, first_photo_name:PHOTOS[0].name,
           name:SETTINGS.name, birthday:SETTINGS.birthday,
           gender:SETTINGS.gender, about:SETTINGS.about,
           latitude:city.lat, longitude:city.lon, city_name:city.name,
@@ -727,14 +734,14 @@ async function registerPreset(presetName) {
       // Upload photos
       if (PHOTOS.length) {
         const pc = Math.min(SETTINGS.photo_count||1, PHOTOS.length);
-        const shuffled = [...PHOTOS].sort(()=>Math.random()-.5);
-        for (let pi = 0; pi < pc; pi++) {
-          logMsg(`  Фото ${pi+1}/${pc}...`);
+        const extraPhotos = PHOTOS.slice(1).sort(()=>Math.random()-.5).slice(0, Math.max(0, pc - 1));
+        for (let pi = 0; pi < extraPhotos.length; pi++) {
+          logMsg(`  Extra photo ${pi+1}/${extraPhotos.length}...`);
           const fd = new FormData();
           fd.append('token', d.jwt);
           fd.append('order', pi + 1);
           fd.append('proxy', accProxy);
-          fd.append('photos', shuffled[pi].blob, shuffled[pi].name || 'photo.jpg');
+          fd.append('photos', extraPhotos[pi].blob, extraPhotos[pi].name || 'photo.jpg');
           try {
             const pr = await fetch('/upload-photo', {method:'POST', body:fd});
             const pd = await pr.json();

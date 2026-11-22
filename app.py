@@ -5,7 +5,8 @@
 Порядок и тела запросов профиля скопированы из HAR (PATCH /api/users/me/ со страницы /app/profile/info).
 
 Запуск:
-    pip install flask httpx curl_cffi
+    pip install -r requirements.txt
+    python -m playwright install chromium
     python app.py
 Потом открой: http://127.0.0.1:5000
 """
@@ -16,6 +17,9 @@ import tempfile
 import os
 import io
 import json
+import contextlib
+import threading
+import re
 import time
 import traceback
 import uuid
@@ -29,6 +33,8 @@ from curl_cffi import CurlHttpVersion
 import twinby_onboard as tw
 from cities import RUSSIAN_CITIES, get_cities_json
 import vk_auth
+
+_VK_BROWSER_AUTH_LOCK = threading.Lock()
 
 app = Flask(__name__)
 
@@ -802,45 +808,73 @@ def _make_proxied_httpx_client(proxy: str = "", **extra) -> "httpx.Client":
 
 def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
                      rucaptcha_key: str = "", proxy: str = "") -> dict:
-    """
-    Авторизация VK → Twinby JWT.
+    """Get a Twinby JWT using the browser VK ID PKCE flow when credentials are present."""
+    log: list[str] = []
 
-    Единственный путь: полный вход через VK ID (v3 PKCE,
-    login.vk.ru/connect_authorize + капча через RuCaptcha vkcaptcha,
-    с закреплённым device_id/uuid/proxy на аккаунт и человеческим
-    таймингом). Подтверждён вручную (GoLogin) и совпадает с ориг. софтом.
+    if vk_login and vk_pass:
+        try:
+            from test_browser_vk_login import run_test_twinby_web
+        except Exception as exc:
+            return {"ok": False,
+                    "error": f"Browser VK auth dependencies unavailable: {type(exc).__name__}: {exc}",
+                    "log": log}
 
-    v2(token)-путь (Twinby /v2/auth/vk напрямую по access_token) ПОЛНОСТЬЮ
-    УБРАН по явному требованию: он даёт "ложный успех" — JWT есть, PATCH на
-    онбординге возвращает 200, но реальный профиль Twinby остаётся
-    недооформленным (имя так и остаётся дефолтным "Макс" на сервере) —
-    аккаунт, зарегистрированный так, просто бесполезен. vk_token
-    принимается в сигнатуре только для обратной совместимости вызовов,
-    для авторизации не используется.
+        captured = io.StringIO()
+        try:
+            # Only one synchronous Chromium login runs at a time in this local app.
+            with _VK_BROWSER_AUTH_LOCK:
+                with contextlib.redirect_stdout(captured):
+                    result = run_test_twinby_web(
+                        login=vk_login,
+                        password=vk_pass,
+                        proxy_raw=proxy,
+                        rucaptcha_key=rucaptcha_key,
+                        headful=True,
+                    )
+        except Exception as exc:
+            result = {"ok": False, "error": f"browser auth raised {type(exc).__name__}"}
 
-    Returns: {"ok": True, "jwt": "...", "log": [...]}
-             или {"ok": False, "error": "...", "log": [...]}
-    """
-    log = []
+        raw_log = captured.getvalue()
+        for line in raw_log.splitlines():
+            if any(marker in line for marker in (
+                "[route] outgoing VK authorize", "[oauth-check]", "[request-event/pre-route"
+            )):
+                log.append(line.strip())
 
-    if not vk_login or not vk_pass:
-        return {"ok": False,
-                "error": "Нужен VK логин+пароль — только полный вход через VK ID "
-                         "(v2/token-способ убран, не даёт рабочий аккаунт)",
-                "log": log}
+        if result.get("ok") and result.get("jwt"):
+            log.append("[AUTH] browser VK ID PKCE flow succeeded; Twinby JWT received")
+            return {"ok": True, "jwt": result["jwt"],
+                    "refresh_token": result.get("refresh_token", ""), "log": log}
 
-    log.append(f"[AUTH] VK-логин (VK ID, строго): login={vk_login[:4]}***")
-    if proxy:
-        log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
-    result = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key, proxy=proxy)
-    log.extend(result.get("log", []))
-    if result.get("ok"):
-        log.append(f"[AUTH] OK: JWT={result['jwt'][:20]}...")
-        return {"ok": True, "jwt": result["jwt"], "log": log,
-                "refresh_token": result.get("refresh_token", "")}
-    err3 = result.get("error", "unknown")
-    log.append(f"[AUTH] FAILED: {err3}")
-    return {"ok": False, "error": f"VK-логин не прошёл: {err3}", "log": log}
+        error_text = str(result.get("error", ""))
+        status = re.search(r"Twinby v3:\s*(\d{3})", error_text)
+        request_id = re.search(r"request_id\W+([0-9a-fA-F]{16,})", error_text)
+        if status:
+            safe_error = f"Twinby JWT exchange failed (HTTP {status.group(1)})"
+            if request_id:
+                safe_error += f", request_id={request_id.group(1)}"
+        elif "ERR_TUNNEL_CONNECTION_FAILED" in raw_log:
+            safe_error = "VK browser could not establish the proxy tunnel."
+        elif "Execution context was destroyed" in raw_log:
+            safe_error = "VK page navigated during a browser API request."
+        elif "missing device_id" in error_text or "state mismatch" in error_text:
+            safe_error = error_text
+        else:
+            safe_error = "Browser VK ID PKCE flow failed; review the safe OAuth checks in the log."
+        log.append("[AUTH] browser VK ID PKCE flow failed")
+        return {"ok": False, "error": safe_error, "log": log}
+
+    if vk_token:
+        log.append("[AUTH] trying legacy VK-token exchange")
+        result = vk_auth.full_auth_v2("", "", rucaptcha_key, proxy=proxy, vk_token=vk_token)
+        log.extend(result.get("log", []))
+        if result.get("ok"):
+            log.append("[AUTH] legacy VK-token exchange succeeded")
+            return {"ok": True, "jwt": result["jwt"],
+                    "refresh_token": result.get("refresh_token", ""), "log": log}
+        log.append(f"[AUTH] legacy VK-token exchange failed: {result.get('error', 'unknown')}")
+
+    return {"ok": False, "error": "Provide VK login and password, or a usable VK token.", "log": log}
 
 
 def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
@@ -920,14 +954,21 @@ table.log-table th{color:#888;font-weight:500}
 """
 
 PAGE_MAIN = """
-<form method="post" action="/" enctype="multipart/form-data">
-  <label class="l">Access token (JWT)</label>
-  <textarea id="token" name="token" required placeholder="Вставь JWT токен или получи через вкладку Аккаунты">{{ f.token }}</textarea>
+<form method="post" action="/old" enctype="multipart/form-data">
+  <label class="l">Access token (JWT, optional if using VK login below)</label>
+  <textarea id="token" name="token" placeholder="Paste a JWT, or leave blank to sign in with VK">{{ f.token }}</textarea>
+  <fieldset><legend>VK ID sign-in (optional)</legend>
+    <label class="l">VK login</label><input type="text" name="vk_id" autocomplete="username">
+    <label class="l">VK password</label><input type="password" name="vk_pass" autocomplete="current-password">
+    <p class="hint">If the JWT field is empty, the app runs the browser-based VK ID PKCE flow.</p>
+  </fieldset>
 
   <label class="l"><input type="checkbox" name="profile_only" {{ 'checked' if f.profile_only }}>
     Только профиль (онбординг на этом аккаунте уже пройден)</label>
 
   <fieldset><legend>Онбординг</legend>
+    <label class="l"><input type="checkbox" name="accept_twinby_terms">
+      I accept Twinby's Privacy Policy and User Agreement and confirm that I am at least 18.</label>
     <label class="l">Имя</label><input type="text" name="name" value="{{ f.name }}">
     <label class="l">Дата рождения</label><input type="date" name="birthday" value="{{ f.birthday }}">
     <label class="l">Пол</label>
@@ -1905,6 +1946,28 @@ def index():
 
     try:
         _proxy = form.get("proxy", "").strip() or _get_next_proxy()
+        if not f["profile_only"] and not form.get("accept_twinby_terms"):
+            raise RuntimeError("Confirm Twinby's Privacy Policy, User Agreement, and 18+ requirement before onboarding.")
+
+        if not f["token"]:
+            vk_login = form.get("vk_id", "").strip()
+            vk_pass = form.get("vk_pass", "")
+            if not vk_login or not vk_pass:
+                raise RuntimeError("Paste a Twinby JWT or provide both VK login and password.")
+            settings = _load_settings()
+            auth = _auth_vk_to_jwt(
+                vk_login=vk_login,
+                vk_pass=vk_pass,
+                rucaptcha_key=settings.get("rucaptcha_key", ""),
+                proxy=_proxy,
+            )
+            for line in auth.get("log", []):
+                tee(line)
+            if not auth.get("ok"):
+                raise RuntimeError(auth.get("error", "VK browser authorization failed."))
+            f["token"] = auth["jwt"]
+            tee("[AUTH] Twinby JWT acquired; continuing with onboarding.")
+
         c = _make_web_client(f["token"], dry, tee, proxy=_proxy)
 
         if not f["profile_only"]:
@@ -2464,7 +2527,7 @@ function registerAnketa(city){
   const p=PRESETS[OPEN_PRESET];
   if(!p||(!p.vk_token&&!p.vk_id)){alert('Укажи VK данные (id:pass:token) в пресете');return;}
   logMsg('Регистрирую анкету '+city+'...');
-  fetch('/preset-register',{method:'POST',headers:{'Content-Type':'application/json'},
+  return fetch('/preset-register',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({vk_token:p.vk_token||'',vk_id:p.vk_id||'',vk_pass:p.vk_pass||'',
       city:city,
       latitude:(p.ankety[city]||{}).latitude||'',
@@ -2483,11 +2546,11 @@ function registerAnketa(city){
   }).catch(e=>logMsg(city+': fetch error — '+e));
 }
 
-function registerAllAnkety(){
+async function registerAllAnkety(){
   const p=PRESETS[OPEN_PRESET];
   if(!p)return;
   for(const city of Object.keys(p.ankety||{})){
-    registerAnketa(city);
+    await registerAnketa(city);
   }
 }
 
@@ -2727,144 +2790,134 @@ def api_cities():
 
 @app.route("/api/register-account", methods=["POST"])
 def api_register_account():
-    """Полная регистрация: VK → JWT (v3 PKCE) + онбординг + профиль + локация + фильтры."""
-    import httpx
+    """VK browser authorization followed by Twinby onboarding and profile setup."""
     data = request.get_json(force=True)
     vk_token = (data.get("vk_token") or "").strip()
     vk_login = (data.get("vk_id") or "").strip()
     vk_pass = (data.get("vk_pass") or "").strip()
+    if data.get("accept_twinby_terms") is not True:
+        return jsonify({"ok": False, "error": "Confirm Twinby's Privacy Policy, User Agreement, and 18+ requirement."}), 400
+    if not vk_login or not vk_pass:
+        return jsonify({"ok": False, "error": "VK ID login and password are required."}), 400
 
-    if not vk_login:
-        return jsonify({"ok": False, "error": "Нужен VK логин и пароль"})
+    name = str(data.get("name") or "").strip()
+    birthday_raw = str(data.get("birthday") or "").strip()
+    gender = data.get("gender", "m")
+    photo_data = str(data.get("first_photo_data_url") or "")
+    photo_name = Path(str(data.get("first_photo_name") or "photo.jpg")).name
+    if not name or not birthday_raw:
+        return jsonify({"ok": False, "error": "Name and date of birth are required."}), 400
+    if gender not in ("m", "f"):
+        return jsonify({"ok": False, "error": "Gender must be m or f."}), 400
+    try:
+        birthday_iso = tw.valid_birthday(birthday_raw)
+    except (SystemExit, ValueError) as e:
+        return jsonify({"ok": False, "error": f"Date of birth: {e}"}), 400
+
+    match = re.fullmatch(r"data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})", photo_data)
+    if not match:
+        return jsonify({"ok": False, "error": "Add a first photo in JPEG, PNG, or WebP format."}), 400
+    photo_mime = "image/" + match.group(1)
+    try:
+        photo_bytes = base64.b64decode(match.group(2), validate=True)
+    except (ValueError, base64.binascii.Error):
+        return jsonify({"ok": False, "error": "Could not decode the first photo."}), 400
+    if not photo_bytes or len(photo_bytes) > 10_000_000:
+        return jsonify({"ok": False, "error": "The first photo is empty or exceeds 10 MB."}), 400
+    extension_by_mime = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+    if MIME.get(Path(photo_name).suffix.lower()) != photo_mime:
+        photo_name = "photo" + extension_by_mime[photo_mime]
 
     settings = _load_settings()
     rucaptcha_key = settings.get("rucaptcha_key", "")
     proxy = data.get("proxy") or _get_next_proxy(settings)
-
+    log_buf = io.StringIO()
     try:
-        # 1) Авторизация через VK (v3 PKCE)
         auth = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
                                vk_token=vk_token, rucaptcha_key=rucaptcha_key,
                                proxy=proxy)
         if not auth.get("ok"):
-            return jsonify({"ok": False, "error": auth.get("error", "Auth failed"),
+            return jsonify({"ok": False, "error": auth.get("error", "VK authorization failed."),
                             "log": auth.get("log", [])})
         jwt_token = auth["jwt"]
-
-        log_buf = io.StringIO()
-        # Записать auth лог
         for line in auth.get("log", []):
             log_buf.write(line + "\n")
-        tee = lambda m: log_buf.write(m + "\n")
+        tee = lambda message: log_buf.write(message + "\n")
         c = _make_web_client(jwt_token, False, tee, proxy=proxy)
 
-        # 2) Онбординг
-        name = data.get("name", "")
-        birthday_raw = data.get("birthday", "")
-        gender = data.get("gender", "m")
+        captcha_cfg = c.call("GET", tw.API["captcha_cfg"])
+        if isinstance(captcha_cfg, dict) and captcha_cfg.get("isActive"):
+            return jsonify({"ok": False, "error": "Twinby CAPTCHA is active; onboarding stopped before profile changes.",
+                            "jwt": jwt_token, "log": log_buf.getvalue()}), 409
 
-        if name and birthday_raw:
-            try:
-                birthday_iso = tw.valid_birthday(birthday_raw)
-            except (SystemExit, ValueError) as e:
-                return jsonify({"ok": False, "error": f"Дата рождения: {e}"})
+        interview_id = str(data.get("interview_id") or DEFAULTS["interview_id"])
+        target_id = str(data.get("target_id") or DEFAULTS["target_id"])
+        targets = c.call("GET", tw.API["targets"])
+        if not isinstance(targets, list) or not targets:
+            raise RuntimeError("Twinby returned no onboarding targets.")
+        valid_target_ids = {str(item.get("id")) for item in targets
+                            if isinstance(item, dict) and item.get("id") is not None}
+        if target_id not in valid_target_ids:
+            raise RuntimeError("Configured target_id is absent from Twinby's current target list.")
 
-            try:
-                cfg = c.call("GET", tw.API["captcha_cfg"])
-                if isinstance(cfg, dict) and cfg.get("isActive"):
-                    return jsonify({"ok": False, "error": "Капча включена"})
-            except Exception:
-                pass
+        def call_step(label, method, endpoint, **kwargs):
+            result = c.call(method, endpoint, **kwargs)
+            tee(f"  OK: {label}")
+            return result
 
-            def safe_call(desc, method, path, **kw):
-                try:
-                    r = c.call(method, path, **kw)
-                    tee(f"  OK: {desc}")
-                    return r
-                except Exception as ex:
-                    tee(f"  WARN: {desc} -> {ex}")
-                    return None
+        call_step("agreement", "POST", tw.API["agreement"])
+        birthday_app = birthday_iso + "T00:00:00.000" if "T" not in birthday_iso else birthday_iso
+        call_step("name+step1", "PATCH", tw.API["me"], json={"name": name, "onboardingStep": 1})
+        call_step("birthday+step2", "PATCH", tw.API["me"], json={"birthday": birthday_app, "onboardingStep": 2})
+        call_step("gender+step3", "PATCH", tw.API["me"], json={"gender": gender, "onboardingStep": 3})
+        call_step("target+step4", "PATCH", tw.API["me"], json={"targetId": target_id, "onboardingStep": 4})
+        call_step("first photo", "POST", tw.API["photo"], data={"order": PHOTO_ORDER},
+                  files={"file": (photo_name, photo_bytes, photo_mime)})
+        call_step("step5", "PATCH", tw.API["me"], json={"onboardingStep": 5})
+        call_step("step6", "PATCH", tw.API["me"], json={"onboardingStep": 6})
+        questions = c.call("GET", tw.API["questions"].format(iid=interview_id))
+        if not isinstance(questions, list) or not questions or any(not isinstance(q, dict) or "id" not in q for q in questions):
+            raise RuntimeError("Twinby returned an empty or invalid interview question list.")
+        # Existing HAR-derived implementation uses answer=4 for every item; confirm semantics in a real account.
+        call_step("interview answers (HAR-derived answer=4)", "POST", tw.API["answers"],
+                  json={"test": [{"question": q["id"], "answer": 4} for q in questions]})
+        call_step("onboardingCompleted", "PATCH", tw.API["me"], json={"onboardingCompleted": True})
 
-            # -- Онбординг: точная копия реального трафика приложения (mitmproxy 2026-11-21) --
-            safe_call("agreement", "POST", tw.API["agreement"])
-
-            # Формат даты как в приложении: "2002-03-22T00:00:00.000"
-            birthday_app = birthday_iso + "T00:00:00.000" if "T" not in birthday_iso else birthday_iso
-
-            # Шаг 1: имя + шаг в ОДНОМ запросе
-            safe_call("name+step1", "PATCH", tw.API["me"], json={"name": name, "onboardingStep": 1})
-
-            # Шаг 2: дата рождения + шаг
-            safe_call("birthday+step2", "PATCH", tw.API["me"], json={"birthday": birthday_app, "onboardingStep": 2})
-
-            # Шаг 3: пол + шаг
-            safe_call("gender+step3", "PATCH", tw.API["me"], json={"gender": gender, "onboardingStep": 3})
-
-            # Шаг 4: цель (targetId) + шаг
-            target_id = "887657566886395905"  # "like" — дефолт из приложения
-            try:
-                targets = c.call("GET", tw.API["targets"])
-                if isinstance(targets, list) and targets:
-                    target_id = targets[0].get("id", target_id)
-            except Exception:
-                tee("  WARN: targets fetch failed, using default")
-            safe_call("target+step4", "PATCH", tw.API["me"], json={"targetId": target_id, "onboardingStep": 4})
-
-            # Шаг 5: фото (загружается отдельно, тут только шаг)
-            safe_call("step5", "PATCH", tw.API["me"], json={"onboardingStep": 5})
-
-            # Шаг 6
-            safe_call("step6", "PATCH", tw.API["me"], json={"onboardingStep": 6})
-
-            # Завершение
-            safe_call("onboardingCompleted", "PATCH", tw.API["me"], json={"onboardingCompleted": True})
-
-        # 3) Профиль
         profile_body = {}
         if data.get("height"):
             profile_body["height"] = str(data["height"])
-        for k in ("education", "children", "alcohol", "smoking"):
-            if data.get(k) not in (None, ""):
-                profile_body[k] = int(data[k])
+        for key in ("education", "children", "alcohol", "smoking"):
+            if data.get(key) not in (None, ""):
+                profile_body[key] = int(data[key])
         if data.get("about"):
             profile_body["about"] = data["about"]
         if profile_body:
-            c.call("PATCH", tw.API["me"], json=profile_body)
+            call_step("profile fields", "PATCH", tw.API["me"], json=profile_body)
 
-        # 4) Локация
-        lat = data.get("latitude")
-        lon = data.get("longitude")
-        city_name = data.get("city_name", "")
-        if lat and lon:
+        lat, lon = data.get("latitude"), data.get("longitude")
+        if lat is not None and lon is not None:
             loc_body = {"location": f"POINT({lat} {lon})"}
-            if city_name:
-                loc_body["nameCity"] = city_name
-            c.call("PATCH", tw.API["me"], json=loc_body)
+            if data.get("city_name"):
+                loc_body["nameCity"] = data["city_name"]
+            call_step("location", "PATCH", tw.API["me"], json=loc_body)
 
-        # 5) Фильтры
         filter_body = {}
         if data.get("min_age"): filter_body["minAges"] = int(data["min_age"])
         if data.get("max_age"): filter_body["maxAges"] = int(data["max_age"])
         if data.get("distance"): filter_body["distance"] = int(data["distance"])
         if data.get("filter_gender"): filter_body["gender"] = data["filter_gender"]
         if filter_body:
-            c.call("PATCH", tw.API["filter"], json=filter_body)
+            call_step("filters", "PATCH", tw.API["filter"], json=filter_body)
 
-        # Получаем инфу о пользователе
-        user_name = name
-        user_id = ""
-        try:
-            me = c.call("GET", tw.API["me"])
-            if isinstance(me, dict):
-                user_name = me.get("name", name)
-                user_id = str(me.get("id", ""))
-        except Exception:
-            pass
-
-        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id, "name": user_name,
-                        "proxy": proxy, "log": log_buf.getvalue()})
+        me = c.call("GET", tw.API["me"])
+        if not isinstance(me, dict) or me.get("onboardingCompleted") is not True:
+            raise RuntimeError("Twinby did not confirm onboardingCompleted=true in the profile readback.")
+        user_id = str(me.get("id", ""))
+        return jsonify({"ok": True, "jwt": jwt_token, "user_id": user_id,
+                        "name": me.get("name", name), "proxy": proxy,
+                        "first_photo_uploaded": True, "log": log_buf.getvalue()})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "log": log_buf.getvalue() if 'log_buf' in dir() else ""})
+        return jsonify({"ok": False, "error": str(e), "log": log_buf.getvalue()})
 
 
 @app.route("/api/verify-video", methods=["POST"])
@@ -3044,6 +3097,35 @@ def api_test_vk_auth():
     result = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
                              vk_token=vk_token, rucaptcha_key=rucaptcha_key,
                              proxy=proxy)
+    return jsonify(result)
+
+
+@app.route("/api/test-v2-auth", methods=["POST"])
+def api_test_v2_auth():
+    """Тест VK Direct Auth + Twinby v2.
+    JSON: {vk_id, vk_pass} и/или {vk_token}, опционально {proxy}
+    Если vk_token есть — сразу на v2.
+    Если нет — Direct Auth → v2."""
+    data = request.get_json(force=True)
+    vk_login = (data.get("vk_id") or "").strip()
+    vk_pass = (data.get("vk_pass") or "").strip()
+    vk_token = (data.get("vk_token") or "").strip()
+
+    settings = _load_settings()
+    rucaptcha_key = settings.get("rucaptcha_key", "")
+
+    if not vk_login and not vk_token:
+        return jsonify({"ok": False, "error": "Нужен vk_id+vk_pass или vk_token"})
+
+    proxy = (data.get("proxy") or "").strip() or _get_next_proxy(settings)
+
+    result = vk_auth.full_auth_v2(
+        login=vk_login,
+        password=vk_pass,
+        rucaptcha_key=rucaptcha_key,
+        proxy=proxy,
+        vk_token=vk_token,
+    )
     return jsonify(result)
 
 
