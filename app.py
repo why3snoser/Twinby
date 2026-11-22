@@ -800,89 +800,47 @@ def _make_proxied_httpx_client(proxy: str = "", **extra) -> "httpx.Client":
     return _httpx.Client(**kw)
 
 
-def _is_transient_v2_error(err: str) -> bool:
-    """
-    Ошибка сети/хоста Twinby (502/503/таймаут/обрыв соединения) — НЕ отклонение
-    авторизации. Пароль её не исправит: Twinby недоступен по той же причине что
-    через токен, что через password. Фоллбэк на password в этом случае только
-    жжёт реальный лимит попыток входа в сам VK (password_bruteforce — он копится
-    по аккаунту в VK, а не связан с тем, исправен ли токен).
-    """
-    if not err:
-        return False
-    markers = (
-        "502", "503", "504", "NO_HOST_CONNECTION", "timeout", "Timeout",
-        "ConnectError", "ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
-        "ConnectionError", "ProxyError",
-    )
-    return any(m in err for m in markers)
-
-
 def _auth_vk_to_jwt(vk_login: str = "", vk_pass: str = "", vk_token: str = "",
                      rucaptcha_key: str = "", proxy: str = "") -> dict:
     """
     Авторизация VK → Twinby JWT.
-    Приоритет (изменено по запросу — v2(token) давал "ложный успех": JWT и
-    200 на PATCH-онбординге, а по факту профиль оставался недооформленным,
-    имя оставалось дефолтным "Макс"):
-      1. Если есть login+pass → ПОЛНЫЙ вход через VK ID (v3 PKCE,
-         login.vk.ru/connect_authorize + капча, с закреплённым device_id/
-         uuid/proxy и человеческим таймингом). Это единственный путь,
-         подтверждённый вручную (GoLogin) и совпадающий с ориг. софтом.
-      2. Если пароля нет вообще (только vk_token) — fallback на Twinby v2
-         напрямую по токену, с ретраями на транзиентные сетевые ошибки.
+
+    Единственный путь: полный вход через VK ID (v3 PKCE,
+    login.vk.ru/connect_authorize + капча через RuCaptcha vkcaptcha,
+    с закреплённым device_id/uuid/proxy на аккаунт и человеческим
+    таймингом). Подтверждён вручную (GoLogin) и совпадает с ориг. софтом.
+
+    v2(token)-путь (Twinby /v2/auth/vk напрямую по access_token) ПОЛНОСТЬЮ
+    УБРАН по явному требованию: он даёт "ложный успех" — JWT есть, PATCH на
+    онбординге возвращает 200, но реальный профиль Twinby остаётся
+    недооформленным (имя так и остаётся дефолтным "Макс" на сервере) —
+    аккаунт, зарегистрированный так, просто бесполезен. vk_token
+    принимается в сигнатуре только для обратной совместимости вызовов,
+    для авторизации не используется.
 
     Returns: {"ok": True, "jwt": "...", "log": [...]}
              или {"ok": False, "error": "...", "log": [...]}
     """
     log = []
 
-    # --- Путь 1 (приоритет): login+pass → полный VK ID логин (v3 PKCE) ---
-    if vk_login and vk_pass:
-        log.append(f"[AUTH] v3 (полный VK-логин): login={vk_login[:4]}***")
-        if proxy:
-            log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
-        result = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key, proxy=proxy)
-        log.extend(result.get("log", []))
-        if result.get("ok"):
-            log.append(f"[AUTH] v3 OK: JWT={result['jwt'][:20]}...")
-            return {"ok": True, "jwt": result["jwt"], "log": log,
-                    "refresh_token": result.get("refresh_token", "")}
-        err3 = result.get("error", "unknown")
-        log.append(f"[AUTH] v3 FAILED: {err3}")
-        if not vk_token:
-            return {"ok": False, "error": f"Полный VK-логин не прошёл: {err3}", "log": log}
-        log.append("[AUTH] Fallback → v2 (token), т.к. пароль не прошёл, а токен есть...")
+    if not vk_login or not vk_pass:
+        return {"ok": False,
+                "error": "Нужен VK логин+пароль — только полный вход через VK ID "
+                         "(v2/token-способ убран, не даёт рабочий аккаунт)",
+                "log": log}
 
-    # --- Путь 2 (резерв): только vk_token — Twinby v2 напрямую ---
-    if vk_token:
-        log.append(f"[AUTH] v2 (token): {vk_token[:30]}...")
-        if proxy:
-            log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
-
-        token_err = "unknown"
-        max_token_attempts = 3
-        for attempt in range(1, max_token_attempts + 1):
-            result = vk_auth.full_auth_v2(vk_login, "", rucaptcha_key, proxy=proxy, vk_token=vk_token)
-            log.extend(result.get("log", []))
-            if result.get("ok"):
-                log.append(f"[AUTH] v2 (token) OK: JWT={result['jwt'][:20]}...")
-                return {"ok": True, "jwt": result["jwt"], "log": log,
-                        "refresh_token": result.get("refresh_token", "")}
-            token_err = result.get("error", "unknown")
-            if _is_transient_v2_error(token_err) and attempt < max_token_attempts:
-                log.append(f"[AUTH] v2 (token) транзиентная ошибка "
-                           f"(попытка {attempt}/{max_token_attempts}): {token_err} — повтор")
-                time.sleep(2 * attempt)
-                continue
-            break
-
-        log.append(f"[AUTH] v2 (token) FAILED: {token_err}")
-        return {"ok": False, "error": f"Все методы провалились. v2(token): {token_err}", "log": log}
-
-    if not vk_login and not vk_token:
-        return {"ok": False, "error": "Нужен VK логин+пароль или VK токен", "log": log}
-    return {"ok": False, "error": "Нужен VK пароль (login без пароля и без токена)", "log": log}
+    log.append(f"[AUTH] VK-логин (VK ID, строго): login={vk_login[:4]}***")
+    if proxy:
+        log.append(f"[AUTH] proxy: {proxy.split('@')[-1] if '@' in proxy else proxy}")
+    result = vk_auth.full_auth(vk_login, vk_pass, rucaptcha_key, proxy=proxy)
+    log.extend(result.get("log", []))
+    if result.get("ok"):
+        log.append(f"[AUTH] OK: JWT={result['jwt'][:20]}...")
+        return {"ok": True, "jwt": result["jwt"], "log": log,
+                "refresh_token": result.get("refresh_token", "")}
+    err3 = result.get("error", "unknown")
+    log.append(f"[AUTH] FAILED: {err3}")
+    return {"ok": False, "error": f"VK-логин не прошёл: {err3}", "log": log}
 
 
 def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
@@ -3086,35 +3044,6 @@ def api_test_vk_auth():
     result = _auth_vk_to_jwt(vk_login=vk_login, vk_pass=vk_pass,
                              vk_token=vk_token, rucaptcha_key=rucaptcha_key,
                              proxy=proxy)
-    return jsonify(result)
-
-
-@app.route("/api/test-v2-auth", methods=["POST"])
-def api_test_v2_auth():
-    """Тест VK Direct Auth + Twinby v2.
-    JSON: {vk_id, vk_pass} и/или {vk_token}, опционально {proxy}
-    Если vk_token есть — сразу на v2.
-    Если нет — Direct Auth → v2."""
-    data = request.get_json(force=True)
-    vk_login = (data.get("vk_id") or "").strip()
-    vk_pass = (data.get("vk_pass") or "").strip()
-    vk_token = (data.get("vk_token") or "").strip()
-
-    settings = _load_settings()
-    rucaptcha_key = settings.get("rucaptcha_key", "")
-
-    if not vk_login and not vk_token:
-        return jsonify({"ok": False, "error": "Нужен vk_id+vk_pass или vk_token"})
-
-    proxy = (data.get("proxy") or "").strip() or _get_next_proxy(settings)
-
-    result = vk_auth.full_auth_v2(
-        login=vk_login,
-        password=vk_pass,
-        rucaptcha_key=rucaptcha_key,
-        proxy=proxy,
-        vk_token=vk_token,
-    )
     return jsonify(result)
 
 
