@@ -2827,6 +2827,16 @@ function renderPresetDetail(){
     +'</div></div>';
 
   const pcfg=PRESETS[OPEN_PRESET]||{};
+  const genderVal=pcfg.gender_filter||'n';
+  html+='<div style="margin-top:14px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">'
+    +'<div><label class="l">Кого лайкать</label><select id="genderFilterSelect" style="max-width:170px">'
+    +'<option value="n"'+(genderVal==='n'?' selected':'')+'>Все (муж. и жен.)</option>'
+    +'<option value="f"'+(genderVal==='f'?' selected':'')+'>Только женщины</option>'
+    +'<option value="m"'+(genderVal==='m'?' selected':'')+'>Только мужчины</option>'
+    +'</select></div>'
+    +'<button type="button" class="go" style="margin-top:0;height:38px" onclick="applyGenderFilter()">Применить ко всем анкетам</button>'
+    +'<span class="hint" id="genderFilterStatusLine"></span>'
+    +'</div>';
   html+='<div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
     +'<div><label class="l">Пауза лайков, сек (от)</label><input type="number" step="0.1" min="0" id="likeDelayMin" value="'+esc(pcfg.like_delay_min||'0.5')+'" style="max-width:90px" onchange="saveDelaySetting(\'like_delay_min\',\'likeDelayMin\')"></div>'
     +'<div><label class="l">до</label><input type="number" step="0.1" min="0" id="likeDelayMax" value="'+esc(pcfg.like_delay_max||'1.5')+'" style="max-width:90px" onchange="saveDelaySetting(\'like_delay_max\',\'likeDelayMax\')"></div>'
@@ -2891,6 +2901,20 @@ function saveDelaySetting(key,inputId){
   if(!PRESETS[OPEN_PRESET]) PRESETS[OPEN_PRESET]={};
   PRESETS[OPEN_PRESET][key]=document.getElementById(inputId).value;
   savePresets();
+}
+
+function applyGenderFilter(){
+  if(!OPEN_PRESET)return;
+  const val=document.getElementById('genderFilterSelect').value;
+  if(!PRESETS[OPEN_PRESET]) PRESETS[OPEN_PRESET]={};
+  PRESETS[OPEN_PRESET].gender_filter=val;
+  savePresets();
+  const line=document.getElementById('genderFilterStatusLine');
+  line.innerText='Применяю...';
+  fetch('/api/preset-set-gender',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preset:OPEN_PRESET,gender:val})})
+    .then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(d=>{ line.innerText='Готово: '+d.ok_count+' анкет(ы) обновлено'+(d.fail_count?', ошибок: '+d.fail_count:''); })
+    .catch(e=>{ line.innerText='Ошибка: '+e.message; });
 }
 
 function bulkRegisterMore(){
@@ -3714,6 +3738,41 @@ def _run_preset_like_job(preset: str) -> None:
     _save_seen_users(SEEN_USERS)
     job["log"].append("Все анкеты пресета завершили (или были остановлены).")
     job["running"] = False
+
+
+@app.route("/api/preset-set-gender", methods=["POST"])
+def api_preset_set_gender():
+    """PATCH /api/users/me/filter/ {"gender": "m"|"f"|"n"} для каждой анкеты пресета.
+    Значение "n" (любой пол) подтверждено HAR-думпом из twinby_onboard.FILTER_DEFAULT."""
+    data = request.get_json(force=True)
+    preset = (data.get("preset") or "").strip()
+    gender = (data.get("gender") or "").strip()
+    if not preset:
+        return jsonify({"ok": False, "error": "preset обязателен"})
+    if gender not in ("m", "f", "n"):
+        return jsonify({"ok": False, "error": "gender должен быть m/f/n"})
+    accs = [(label, acc) for label, acc in ACCOUNTS.items()
+            if acc.get("preset") == preset and acc.get("jwt") and not acc.get("dead")]
+    if not accs:
+        return jsonify({"ok": True, "ok_count": 0, "fail_count": 0, "errors": [], "note": "нет анкет с JWT в этом пресете"})
+    ok_count, fail_count, errors = 0, 0, []
+    for label, acc in accs:
+        try:
+            r = httpx.patch(
+                f"{tw.BASE}/api/users/me/filter/",
+                headers={"User-Agent": tw.UA, "Authorization": f"JWT {acc['jwt']}",
+                         "Content-Type": "application/json", "Accept": "application/json"},
+                json={"gender": gender}, timeout=15,
+            )
+            if r.status_code < 400:
+                ok_count += 1
+            else:
+                fail_count += 1
+                errors.append(f"{label}: {r.status_code} {r.text[:150]}")
+        except Exception as e:
+            fail_count += 1
+            errors.append(f"{label}: {e}")
+    return jsonify({"ok": True, "ok_count": ok_count, "fail_count": fail_count, "errors": errors[:20]})
 
 
 @app.route("/api/preset-like/start", methods=["POST"])
