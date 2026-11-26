@@ -1513,11 +1513,14 @@ function uploadPhotoPool(){
   const fd=new FormData();
   for(let i=0;i<files.length;i++) fd.append('photos',files[i]);
   document.getElementById('photoPoolLog').innerText='Загружаю...';
-  fetch('/settings/photo-pool',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
-    document.getElementById('photoPoolLog').innerText='Добавлено: '+d.added+(d.skipped?', пропущено: '+d.skipped:'')+'. Всего в пуле: '+d.total;
-    document.getElementById('photoPoolFiles').value='';
-    loadPhotoPool();
-  });
+  fetch('/settings/photo-pool',{method:'POST',body:fd})
+    .then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(d=>{
+      document.getElementById('photoPoolLog').innerText='Добавлено: '+d.added+(d.skipped?', пропущено: '+d.skipped:'')+'. Всего в пуле: '+d.total;
+      document.getElementById('photoPoolFiles').value='';
+      loadPhotoPool();
+    })
+    .catch(e=>{ document.getElementById('photoPoolLog').innerText='Ошибка загрузки: '+e.message; });
 }
 function deletePhotoPoolFile(name){
   if(!confirm('Удалить фото из пула?'))return;
@@ -1542,11 +1545,14 @@ function uploadVideoPool(){
   const fd=new FormData();
   for(let i=0;i<files.length;i++) fd.append('videos',files[i]);
   document.getElementById('videoPoolLog').innerText='Загружаю...';
-  fetch('/settings/video-pool',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
-    document.getElementById('videoPoolLog').innerText='Добавлено: '+d.added+(d.skipped?', пропущено: '+d.skipped:'')+'. Всего в пуле: '+d.total;
-    document.getElementById('videoPoolFiles').value='';
-    loadVideoPool();
-  });
+  fetch('/settings/video-pool',{method:'POST',body:fd})
+    .then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(d=>{
+      document.getElementById('videoPoolLog').innerText='Добавлено: '+d.added+(d.skipped?', пропущено: '+d.skipped:'')+'. Всего в пуле: '+d.total;
+      document.getElementById('videoPoolFiles').value='';
+      loadVideoPool();
+    })
+    .catch(e=>{ document.getElementById('videoPoolLog').innerText='Ошибка загрузки: '+e.message; });
 }
 function deleteVideoPoolFile(name){
   if(!confirm('Удалить видео из пула?'))return;
@@ -2161,7 +2167,13 @@ def _make_web_client(token: str, dry: bool, tee, proxy: str = ""):
     class WebClient(tw.Client):
         def call(self, method, path, **kw):
             shown = path + ("?" + "&".join(f"{k}={v}" for k, v in kw["params"].items()) if kw.get("params") else "")
-            tee(f"{method} {shown}" + (" [dry-run]" if self.dry and method != "GET" else ""))
+            # Точечный опрос чатов (список/история/счётчик/мэтчи-без-переписки)
+            # не логируем — это фоновый polling, он забивал лог мусором и не
+            # нёс полезной информации по сравнению с самими LIKE/MSG-строками.
+            # Ошибки (>=400) всё равно всплывают ниже через RuntimeError.
+            is_noisy_poll = path.startswith("/api/chats/")
+            if not is_noisy_poll:
+                tee(f"{method} {shown}" + (" [dry-run]" if self.dry and method != "GET" else ""))
             if self.dry and method != "GET":
                 return {}
             r = self.http.request(method, path, **kw)
@@ -2532,6 +2544,27 @@ def _load_presets():
 def _save_presets(data):
     PRESETS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+
+def _preset_delay(preset_cfg: dict, min_key: str, max_key: str,
+                   default_min: float, default_max: float) -> tuple[float, float]:
+    """Достаёт пару delay_min/delay_max из настроек пресета (поля из формы —
+    строки, могут быть пустыми/некорректными), с отказом на дефолт при любой
+    ошибке парсинга. Если min > max после парсинга — меняет местами, чтобы
+    random.uniform не упал."""
+    try:
+        dmin = float(preset_cfg.get(min_key, default_min))
+    except (TypeError, ValueError):
+        dmin = default_min
+    try:
+        dmax = float(preset_cfg.get(max_key, default_max))
+    except (TypeError, ValueError):
+        dmax = default_max
+    if dmin < 0:
+        dmin = 0.0
+    if dmax < dmin:
+        dmin, dmax = dmax, dmin
+    return dmin, dmax
+
 @app.route("/api/presets", methods=["GET"])
 def get_presets():
     return jsonify(_load_presets())
@@ -2793,15 +2826,24 @@ function renderPresetDetail(){
     +'<button type="button" class="go" style="margin-top:4px;height:32px;font-size:12px" onclick="quickAddAccounts()">Добавить</button>'
     +'</div></div>';
 
+  const pcfg=PRESETS[OPEN_PRESET]||{};
   html+='<div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<div><label class="l">Пауза лайков, сек (от)</label><input type="number" step="0.1" min="0" id="likeDelayMin" value="'+esc(pcfg.like_delay_min||'0.5')+'" style="max-width:90px" onchange="saveDelaySetting(\'like_delay_min\',\'likeDelayMin\')"></div>'
+    +'<div><label class="l">до</label><input type="number" step="0.1" min="0" id="likeDelayMax" value="'+esc(pcfg.like_delay_max||'1.5')+'" style="max-width:90px" onchange="saveDelaySetting(\'like_delay_max\',\'likeDelayMax\')"></div>'
+    +'</div>';
+  html+='<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
     +'<button type="button" class="go alt" id="likeBtn" onclick="startPresetLike()" style="margin-top:0">Лайкать</button>'
     +'<button type="button" class="go danger" id="stopLikeBtn" onclick="stopPresetLike()" style="margin-top:0;display:none">Стоп</button>'
     +'<span class="hint" id="likeStatusLine"></span>'
     +'</div>';
 
   html+='<div style="margin-top:16px"><label class="l">Сообщения для рассылки (по одному на строку — при мэтче без нашего ответа уйдёт случайное)</label>'
-    +'<textarea id="broadcastMessages" rows="4" style="width:100%" onchange="saveBroadcastMessages()">'+esc((PRESETS[OPEN_PRESET]||{}).messages||'')+'</textarea></div>';
+    +'<textarea id="broadcastMessages" rows="4" style="width:100%" onchange="saveBroadcastMessages()">'+esc(pcfg.messages||'')+'</textarea></div>';
   html+='<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<div><label class="l">Пауза рассылки, сек (от)</label><input type="number" step="0.1" min="0" id="msgDelayMin" value="'+esc(pcfg.msg_delay_min||'0.5')+'" style="max-width:90px" onchange="saveDelaySetting(\'msg_delay_min\',\'msgDelayMin\')"></div>'
+    +'<div><label class="l">до</label><input type="number" step="0.1" min="0" id="msgDelayMax" value="'+esc(pcfg.msg_delay_max||'1.5')+'" style="max-width:90px" onchange="saveDelaySetting(\'msg_delay_max\',\'msgDelayMax\')"></div>'
+    +'</div>';
+  html+='<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
     +'<button type="button" class="go alt" id="broadcastBtn" onclick="startPresetBroadcast()" style="margin-top:0">Рассылка</button>'
     +'<button type="button" class="go danger" id="stopBroadcastBtn" onclick="stopPresetBroadcast()" style="margin-top:0;display:none">Стоп</button>'
     +'<span class="hint" id="broadcastStatusLine"></span>'
@@ -2841,6 +2883,13 @@ function saveBroadcastMessages(){
   if(!OPEN_PRESET)return;
   if(!PRESETS[OPEN_PRESET]) PRESETS[OPEN_PRESET]={};
   PRESETS[OPEN_PRESET].messages=document.getElementById('broadcastMessages').value;
+  savePresets();
+}
+
+function saveDelaySetting(key,inputId){
+  if(!OPEN_PRESET)return;
+  if(!PRESETS[OPEN_PRESET]) PRESETS[OPEN_PRESET]={};
+  PRESETS[OPEN_PRESET][key]=document.getElementById(inputId).value;
   savePresets();
 }
 
@@ -3538,11 +3587,14 @@ def _cooldown_wait(seconds: int, stop_event: "threading.Event") -> bool:
     return False
 
 
-def _like_loop_for_account(label: str, stop_event: "threading.Event", tee) -> dict:
+def _like_loop_for_account(label: str, stop_event: "threading.Event", tee,
+                            delay_min: float = 0.5, delay_max: float = 1.5) -> dict:
     """Лайкает ленту одного аккаунта, пока она не опустеет или не наберётся
     много обычных (не лимитных) ошибок подряд. На лимит (429) — ждёт ~20 минут
     и резюмит (одинаково для всех — премиум просто не должен словить лимит
-    на стороне сервера, отдельной ветки на это в коде нет)."""
+    на стороне сервера, отдельной ветки на это в коде нет).
+    delay_min/delay_max — пауза между действиями (свайпами), настраивается
+    в пресете (по умолчанию как было раньше, 0.5-1.5 сек)."""
     import random
     acc = ACCOUNTS.get(label)
     if not acc or not acc.get("jwt"):
@@ -3618,8 +3670,8 @@ def _like_loop_for_account(label: str, stop_event: "threading.Event", tee) -> di
             else:
                 disliked += 1
                 _mark_seen(uid, "dislike", label)
-                tee(f"DISLIKE (уже встречался раньше): id={uid}")
-            time.sleep(random.uniform(0.5, 1.5))
+                tee(f"DISLIKE (уже встречался раньше, не дублируем лайк): id={uid}")
+            time.sleep(random.uniform(delay_min, delay_max))
         if stopped_reason:
             break
     acc["likes_done"] = acc.get("likes_done", 0) + liked
@@ -3641,11 +3693,13 @@ def _run_preset_like_job(preset: str) -> None:
         job["log"].append("Нет анкет с JWT в этом пресете.")
         job["running"] = False
         return
-    job["log"].append(f"Старт: {len(accs)} анкет(ы), лайкаю параллельно...")
+    preset_cfg = _load_presets().get(preset) or {}
+    delay_min, delay_max = _preset_delay(preset_cfg, "like_delay_min", "like_delay_max", 0.5, 1.5)
+    job["log"].append(f"Старт: {len(accs)} анкет(ы), лайкаю параллельно (пауза {delay_min}-{delay_max} сек)...")
 
     def worker(label):
         tee = lambda m: job["log"].append(f"[{label}] {m}")
-        res = _like_loop_for_account(label, stop_event, tee)
+        res = _like_loop_for_account(label, stop_event, tee, delay_min=delay_min, delay_max=delay_max)
         with LIKE_JOBS_LOCK:
             job["accounts"][label] = res
         tee(f"готово: лайков {res['liked']}, дизлайков {res['disliked']}, стоп: {res.get('stopped_reason') or '-'}")
@@ -3761,14 +3815,17 @@ def _empty_chats_all_pages(c, max_pages: int = 10) -> list[dict]:
     return normalized
 
 
-def _broadcast_loop_for_account(label: str, messages: list[str], stop_event: "threading.Event", tee) -> dict:
+def _broadcast_loop_for_account(label: str, messages: list[str], stop_event: "threading.Event", tee,
+                                 delay_min: float = 0.5, delay_max: float = 1.5) -> dict:
     """Непрерывно опрашивает список чатов аккаунта. Для каждого чата, где мы
     ещё НИ РАЗУ не писали (проверяется не только по lastMessage.ownerId —
     это только быстрый отсев, а по полной истории первой страницы, т.к.
     lastMessage может снова быть от собеседника после нашего более раннего
     сообщения), отправляет одно случайное сообщение из списка пресета.
     Уже отвеченные чаты запоминаются в MESSAGED_CHATS, чтобы не перепроверять
-    их историю на каждом новом проходе."""
+    их историю на каждом новом проходе.
+    delay_min/delay_max — пауза между отправками сообщений, настраивается
+    в пресете (по умолчанию как было раньше, 0.5-1.5 сек)."""
     import random
     acc = ACCOUNTS.get(label)
     if not acc or not acc.get("jwt"):
@@ -3896,8 +3953,8 @@ def _broadcast_loop_for_account(label: str, messages: list[str], stop_event: "th
             sent += 1
             _mark_messaged(chat_id, label, text)
             who = (chat.get("interlocutor") or {}).get("name", "?")
-            tee(f"MSG #{sent} -> {who} (chat={chat_id}): {text!r}")
-            time.sleep(random.uniform(0.5, 1.5))
+            tee(f"MSG #{sent} -> {who}: {text!r}")
+            time.sleep(random.uniform(delay_min, delay_max))
         if stopped_reason:
             break
         if _cooldown_wait(BROADCAST_POLL_SEC, stop_event):
@@ -3920,11 +3977,13 @@ def _run_preset_broadcast_job(preset: str, messages: list[str]) -> None:
         job["log"].append("Нет анкет с JWT в этом пресете.")
         job["running"] = False
         return
-    job["log"].append(f"Старт рассылки: {len(accs)} анкет(ы), сообщений в списке: {len(messages)}.")
+    preset_cfg = _load_presets().get(preset) or {}
+    delay_min, delay_max = _preset_delay(preset_cfg, "msg_delay_min", "msg_delay_max", 0.5, 1.5)
+    job["log"].append(f"Старт рассылки: {len(accs)} анкет(ы), сообщений в списке: {len(messages)}, пауза {delay_min}-{delay_max} сек.")
 
     def worker(label):
         tee = lambda m: job["log"].append(f"[{label}] {m}")
-        res = _broadcast_loop_for_account(label, messages, stop_event, tee)
+        res = _broadcast_loop_for_account(label, messages, stop_event, tee, delay_min=delay_min, delay_max=delay_max)
         with BROADCAST_JOBS_LOCK:
             job["accounts"][label] = res
         tee(f"готово: отправлено {res['sent']}, проверено чатов {res['checked']}, стоп: {res.get('stopped_reason') or '-'}")
