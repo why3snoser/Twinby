@@ -1,0 +1,20 @@
+{
+  "Рыбак_1230846032625205250": {
+    "vk_token": "vk1.a.asi5PpdIYaazTvQtYk9oYBvgQ73ICnuwKlKlVi91ye0bUh7NFxUqEvxGOp-oB2oJtS0Kt2kMzyVcOkj1VNg54nG05ym6A9a6Ek2RQeapnyxRMRGZOBjY5fyxh-gUt4Fx5k8imQ3X53y7wK1o7v0H6ZSgKIZrFg8Cs7m3rEZTypcFe_5poygv91TO-YaLfUYLdw_ig72UK2L2Sh8gyDHAXA",
+    "vk_id": "79824590847",
+    "vk_pass": "FecFSNifGbevmuBI",
+    "jwt": "eyJhbGciOiJFUzI1NiIsImtpZCI6InQwaFVEaGgwbFYxK285SWhiaTJoQlZ1QnEzeUF6aURRR3RnRnJCdlVWbnMiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJhdXRoLXNydiIsInN1YiI6IjEyMzA4NDYwMzI2MjUyMDUyNTAiLCJleHAiOjE3OTU3MTI3OTksImlhdCI6MTc5NTY5NDczOSwianRpIjoiNTY2ZThjMDctNTZkMC00NjhmLTg0MDMtYTk3ZDNiOGRjMmYzIiwidmVyc2lvbiI6MywidHlwZSI6ImFjY2VzcyIsInNlc3Npb25faWQiOiIxNjc1ZDNhNi0yNWVkLTRlOGUtYjM4ZC01OGMwMjdiOGY2ZGUiLCJjbGllbnRfaWQiOiIiLCJyb2xlIjp7ImlzX3N0YWZmIjpmYWxzZSwiaXNfYWRtaW4iOmZhbHNlfSwidXNlcl9pZCI6MTIzMDg0NjAzMjYyNTIwNTI1MCwidXVpZCI6Ijc1ZWEyZDU0LTY2NzYtNDU3ZS04M2I1LTQ3ZDAwZWNiYjdkNCIsInRlbmFudF9pZCI6IkNJUyJ9.CkYLLuOP3QhDHPPe2v4iTGpfXS85wGcP-lQ8Dk8sYvKum-R3-qZQuJZ6GZT-79jN6B6EH5cIjqXCHpgW5zX6Og",
+    "user_id": "1230846032625205250",
+    "name": "Ali",
+    "proxy": "http://a4ae9fb5a637e03900d8__cr.ru;anon.1:0576c43a0058b05c@74.81.81.81:10000",
+    "preset": "Рыбак",
+    "verified": false,
+    "premium": false,
+    "likes_done": 0,
+    "dislikes_done": 0,
+    "onboarded": true,
+    "onboard_error": "",
+    "video_verified": false,
+    "city": "Воронеж"
+  }
+}

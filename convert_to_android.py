@@ -99,6 +99,53 @@ def _stco_to_co64(data, stbl_offset, stbl_size):
     return data, size_diff
 
 
+def _reorder_stbl(data, stbl_off, stbl_size, debug_print=None):
+    """Переставляет children stbl в порядок РЕАЛЬНОГО Android MediaRecorder.
+
+    ПОДТВЕРЖДЕНО 2026-11-23 побайтовым разбором настоящего успешного запроса
+    (mitmproxy, Verification Passed): порядок atoms в stbl —
+    stsd, stts, stsz, stsc, co64, stss (stss ПОСЛЕДНИЙ).
+
+    FFmpeg (libavformat movenc) пишет другой порядок — stsd, stts, stss, stsc,
+    stsz, stco — и это, судя по всему, одна из вещей, по которым Twinby отличает
+    FFmpeg-файл от настоящей Android-записи за ~6-20мс (раньше любого реального
+    анализа видео). Сумма размеров не меняется — только порядок внутри stbl.
+    """
+    if debug_print is None:
+        debug_print = lambda msg: None
+
+    children = {}
+    order_seen = []
+    offset = stbl_off + 8
+    end = stbl_off + stbl_size
+    while offset < end - 8:
+        size = struct.unpack(">I", data[offset:offset + 4])[0]
+        name = bytes(data[offset + 4:offset + 8])
+        if size < 8 or offset + size > end:
+            break
+        children[name] = bytes(data[offset:offset + size])
+        order_seen.append(name)
+        offset += size
+
+    target_order = [b"stsd", b"stts", b"stsz", b"stsc", b"co64", b"stss"]
+    if order_seen == target_order:
+        return data  # уже в нужном порядке
+
+    new_content = b"".join(children[n] for n in target_order if n in children)
+    for n, box in children.items():
+        if n not in target_order:
+            new_content += box
+
+    if len(new_content) != stbl_size - 8:
+        debug_print(f"  ⚠ reorder stbl: длина не совпала ({len(new_content)} vs {stbl_size - 8}), пропускаю")
+        return data
+
+    data = data[:stbl_off + 8] + bytearray(new_content) + data[stbl_off + stbl_size:]
+    debug_print(f"  stbl: порядок atoms {[n.decode() for n in order_seen]} → "
+                f"{[n.decode() for n in target_order if n in children]}")
+    return data
+
+
 def _update_ancestors(data, changed_offset, size_diff):
     """Обновляет размеры только тех контейнеров, которые СОДЕРЖАТ changed_offset."""
     containers = [b"moov", b"trak", b"mdia", b"minf", b"stbl", b"stsd", b"edts"]
@@ -120,6 +167,14 @@ def _patch_mp4_atoms(data: bytearray, debug_print=None) -> bytearray:
     """Пост-обработка: превращает FFmpeg-выход в Android MediaRecorder формат."""
     if debug_print is None:
         debug_print = lambda msg: None
+
+    # ПОДТВЕРЖДЕНО: запоминаем исходную позицию mdat ДО любых правок — она
+    # нужна ниже, чтобы вычислить суммарный сдвиг от всех шагов (замена ftyp/
+    # удаление edts,udta/переименование hdlr/замена avc1/конвертация stco→co64)
+    # и поправить co64-офсеты. Без этого chunk offset'ы остаются от исходного
+    # ffmpeg-файла и не совпадают с реальным положением данных → файл не
+    # декодируется ("Invalid NAL unit size").
+    _orig_mdat_off, _ = _find_atom(data, b"mdat")
 
     # === 1. ftyp: isom, minor=131072, brands=[isom,iso2,mp41] ===
     ftyp_size = struct.unpack(">I", data[0:4])[0]
@@ -223,6 +278,46 @@ def _patch_mp4_atoms(data: bytearray, debug_print=None) -> bytearray:
         data[mdhd_pos + 20:mdhd_pos + 24] = struct.pack(">I", new_dur)
         debug_print(f"  mdhd timescale {old_ts}→{new_ts}")
 
+        # 6a-bis. КРИТИЧНО: stts хранит длительности сэмплов В ЕДИНИЦАХ mdhd-
+        # timescale. Если поменять timescale и не пересчитать stts — плеер
+        # получает кашу по таймингу (неверный fps/duration, decoder падает на
+        # NAL). Пересчитываем пропорционально.
+        moov_off_ts, moov_size_ts = _find_atom(data, b"moov")
+        trak_off_ts, trak_size_ts = _find_atom(data, b"trak", moov_off_ts + 8, moov_off_ts + moov_size_ts)
+        mdia_off_ts, mdia_size_ts = _find_atom(data, b"mdia", trak_off_ts + 8, trak_off_ts + trak_size_ts)
+        minf_off_ts, minf_size_ts = _find_atom(data, b"minf", mdia_off_ts + 8, mdia_off_ts + mdia_size_ts)
+        stbl_off_ts, stbl_size_ts = _find_atom(data, b"stbl", minf_off_ts + 8, minf_off_ts + minf_size_ts)
+        stts_off_ts, stts_size_ts = _find_atom(data, b"stts", stbl_off_ts + 8, stbl_off_ts + stbl_size_ts)
+        if stts_off_ts is not None and old_ts:
+            entry_count = struct.unpack(">I", data[stts_off_ts + 12:stts_off_ts + 16])[0]
+            for i in range(entry_count):
+                eo = stts_off_ts + 16 + i * 8
+                sample_delta = struct.unpack(">I", data[eo + 4:eo + 8])[0]
+                new_delta = max(1, round(sample_delta * new_ts / old_ts))
+                data[eo + 4:eo + 8] = struct.pack(">I", new_delta)
+            debug_print(f"  stts: {entry_count} запис(ей) пересчитано под новый timescale")
+
+    # 6b. tkhd flags: реальный Android выставляет 0x000007 (enabled+in_movie+
+    # in_preview), FFmpeg по умолчанию — 0x000003 (без in_preview).
+    # ПОДТВЕРЖДЕНО побайтовым сравнением с реальным успешным запросом.
+    moov_off, moov_size = _find_atom(data, b"moov")
+    trak_off, trak_size = _find_atom(data, b"trak", moov_off + 8, moov_off + moov_size)
+    tkhd_off, tkhd_size = _find_atom(data, b"tkhd", trak_off + 8, trak_off + trak_size)
+    if tkhd_off is not None and data[tkhd_off + 8] == 0:
+        old_flags = bytes(data[tkhd_off + 9:tkhd_off + 12])
+        data[tkhd_off + 9:tkhd_off + 12] = b"\x00\x00\x07"
+        debug_print(f"  tkhd flags {old_flags.hex()}→000007")
+
+    # 6c. vmhd flags: реальный Android — 0x000000, FFmpeg по умолчанию — 0x000001.
+    # ПОДТВЕРЖДЕНО побайтовым сравнением с реальным успешным запросом.
+    mdia_off, mdia_size = _find_atom(data, b"mdia", trak_off + 8, trak_off + trak_size)
+    minf_off, minf_size = _find_atom(data, b"minf", mdia_off + 8, mdia_off + mdia_size)
+    vmhd_off, vmhd_size = _find_atom(data, b"vmhd", minf_off + 8, minf_off + minf_size)
+    if vmhd_off is not None:
+        old_flags = bytes(data[vmhd_off + 9:vmhd_off + 12])
+        data[vmhd_off + 9:vmhd_off + 12] = b"\x00\x00\x00"
+        debug_print(f"  vmhd flags {old_flags.hex()}→000000")
+
     # 7-9. Работаем внутри stbl (навигация через контейнеры)
     moov_off, moov_size = _find_atom(data, b"moov")
     trak_off, trak_size = _find_atom(data, b"trak", moov_off + 8, moov_off + moov_size)
@@ -230,17 +325,41 @@ def _patch_mp4_atoms(data: bytearray, debug_print=None) -> bytearray:
     minf_off, minf_size = _find_atom(data, b"minf", mdia_off + 8, mdia_off + mdia_size)
     stbl_off, stbl_size = _find_atom(data, b"stbl", minf_off + 8, minf_off + minf_size)
 
-    # 7. Заменяем avc1 на Android'овский (SPS/PPS, pasp, colr)
+    # 7. Заменяем ТОЛЬКО обёртку avc1 на Android'овскую (box-header, pasp,
+    # colr) — SPS/PPS (avcC) ОСТАВЛЯЕМ от ffmpeg, т.к. они реально описывают
+    # закодированный битстрим этого видео. ПОДТВЕРЖДЕНО побайтово: подмена
+    # avcC на чужой (из другого видео) SPS/PPS ломает декодирование со 2-го
+    # кадра (reference count overflow) — 1-й IDR кадр декодируется почти
+    # случайно, а дальше параметры (resolution/ref frames/POC) не совпадают
+    # с реальным битстримом.
     stsd_off, stsd_size = _find_atom(data, b"stsd", stbl_off + 8, stbl_off + stbl_size)
     if stsd_off:
         avc1_off, avc1_size = _find_atom(data, b"avc1", stsd_off + 16, stsd_off + stsd_size)
         if avc1_off:
-            new_avc1 = _ANDROID_AVC1
+            # Реальный avcC (SPS/PPS) этого битстрима — забираем ДО замены
+            real_avcC_off, real_avcC_size = _find_atom(
+                data, b"avcC", avc1_off + 8 + 78, avc1_off + avc1_size
+            )
+            real_avcC = bytes(data[real_avcC_off:real_avcC_off + real_avcC_size]) \
+                if real_avcC_off is not None else None
+
+            if real_avcC:
+                android_header = _ANDROID_AVC1[:86]  # box size+type+фикс. поля (ширина/высота и т.п.)
+                android_avcC_size = struct.unpack(">I", _ANDROID_AVC1[86:90])[0]
+                android_tail = _ANDROID_AVC1[86 + android_avcC_size:]  # pasp + colr
+
+                new_avc1_content = android_header + real_avcC + android_tail
+                new_avc1 = struct.pack(">I", len(new_avc1_content)) + new_avc1_content[4:]
+                debug_print(f"  avc1→Android обёртка, SPS/PPS СВОИ ({len(real_avcC)}б), pasp, colr")
+            else:
+                new_avc1 = _ANDROID_AVC1
+                debug_print("  ⚠ не нашёл свой avcC — использую Android SPS/PPS (риск рассинхрона)")
+
             size_diff = len(new_avc1) - avc1_size
             data = data[:avc1_off] + bytearray(new_avc1) + data[avc1_off + avc1_size:]
             if size_diff != 0:
                 _update_ancestors(data, avc1_off, size_diff)
-            debug_print(f"  avc1→Android (SPS 18б, pasp, colr) [{size_diff:+d} б]")
+            debug_print(f"  avc1 размер: {avc1_size}→{len(new_avc1)} [{size_diff:+d} б]")
 
     # 8. stco → co64 (перечитываем позиции после замены avc1)
     moov_off, moov_size = _find_atom(data, b"moov")
@@ -254,6 +373,15 @@ def _patch_mp4_atoms(data: bytearray, debug_print=None) -> bytearray:
         if sd:
             _update_ancestors(data, stco_off, sd)
             debug_print(f"  stco→co64 (+{sd} б)")
+
+    # 9. Переставляем atoms внутри stbl в порядок реального Android MediaRecorder
+    # (ПОДТВЕРЖДЕНО по байтам реального успешного запроса: stsd,stts,stsz,stsc,co64,stss)
+    moov_off, moov_size = _find_atom(data, b"moov")
+    trak_off, trak_size = _find_atom(data, b"trak", moov_off + 8, moov_off + moov_size)
+    mdia_off, mdia_size = _find_atom(data, b"mdia", trak_off + 8, trak_off + trak_size)
+    minf_off, minf_size = _find_atom(data, b"minf", mdia_off + 8, mdia_off + mdia_size)
+    stbl_off, stbl_size = _find_atom(data, b"stbl", minf_off + 8, minf_off + minf_size)
+    data = _reorder_stbl(data, stbl_off, stbl_size, debug_print=debug_print)
 
     # === 10. Большой free перед mdat (как Android) ===
     moov_off, moov_size = _find_atom(data, b"moov")
@@ -270,6 +398,22 @@ def _patch_mp4_atoms(data: bytearray, debug_print=None) -> bytearray:
     if mdat_off is None:
         raise RuntimeError("mdat не найден")
 
+    # === 9b. КРИТИЧНО: компенсируем co64 за ВСЕ предыдущие правки (ftyp,
+    # edts, udta, hdlr, avc1, формат stco→co64, удаление маленького free) —
+    # co64 всё ещё хранит исходные (до правок) абсолютные офсеты из ffmpeg,
+    # а реальное mdat уже сдвинулось. ПОДТВЕРЖДЕНО: без этого декодер не
+    # может прочитать NAL-юниты (офсеты указывают не туда).
+    pre_shift = mdat_off - _orig_mdat_off
+    if pre_shift != 0:
+        co64_pos_pre = data.find(b"co64")
+        if co64_pos_pre > 0:
+            entry_count_pre = struct.unpack(">I", data[co64_pos_pre + 8:co64_pos_pre + 12])[0]
+            for i in range(entry_count_pre):
+                eo = co64_pos_pre + 12 + i * 8
+                old = struct.unpack(">Q", data[eo:eo + 8])[0]
+                data[eo:eo + 8] = struct.pack(">Q", old + pre_shift)
+            debug_print(f"  co64: компенсация накопленного сдвига ({pre_shift:+d} б)")
+
     # === 10a. Конвертируем mdat в extended-size (64-бит) как у Android ===
     # Android MediaRecorder: [00 00 00 01] [mdat] [8-byte size] [data...]
     # FFmpeg:                 [4-byte size] [mdat] [data...]
@@ -285,7 +429,7 @@ def _patch_mp4_atoms(data: bytearray, debug_print=None) -> bytearray:
     data = data[:mdat_off] + bytearray(free_atom) + data[mdat_off:]
 
     # Обновляем chunk offsets: free вставлен + mdat header вырос
-    offset_shift = target_free_size - old_free_size + mdat_header_growth
+    offset_shift = target_free_size + mdat_header_growth
     co64_pos = data.find(b"co64")
     if co64_pos > 0:
         entry_count = struct.unpack(">I", data[co64_pos + 8:co64_pos + 12])[0]
@@ -295,9 +439,37 @@ def _patch_mp4_atoms(data: bytearray, debug_print=None) -> bytearray:
             data[eo:eo + 8] = struct.pack(">Q", old + offset_shift)
     debug_print(f"  free {old_free_size}→{target_free_size}")
 
-    # === 11. wide atom в конце (как в эталоне) ===
-    wide_atom = struct.pack(">I", 170) + b"wide" + (b"\x00" * 162)
-    data += bytearray(wide_atom)
+    # === 11. wide atom с twpd (antibot verification payload) ===
+    # twpd — зашифрованный антибот-токен внутри wide atom.
+    # Формат: wide(8) + twpd_box(168) = 176 байт
+    # twpd_box: header(8) + payload(160)
+    # payload: format(2) + version(2) + flags(2) + crypto_blob(150) + wide_size(4)
+    # Крипто-блоб зашифрован AES-GCM ключом из Firebase Remote Config
+    # (abot_signing_sha256), который не извлекается из APK статически.
+    # Этот twpd взят из верифицированного эталона (franken3.mp4, Result: true).
+    _TWPD_WIDE = bytes.fromhex(
+        "000000b077696465"           # wide atom header: size=176, tag="wide"
+        "000000a874777064"           # twpd box header: size=168, tag="twpd"
+        "002400010001"               # format=0x24, version=1, flags=1
+        "9ffe623695eb83d0bc2c922a"   # AES-GCM IV (12 bytes)
+        "e74903eebcd7b74666171502"
+        "6e9226d20245215297"
+        "42e1fdd9aaee85923a"
+        "10e890902ab38581ec368ab4"
+        "6babc50953ea23f882"
+        "87288b78dcc92874c0f76d"
+        "4a25090b7a841ba4efabea2a"
+        "6f7e2fdb5ded26001cf1a144"
+        "a8390a04c72bec3f"
+        "9de011dddc42bd11"
+        "59116e18f8cd5fde"
+        "a77a1d26d5d9acb8"
+        "4907a0c570d138c6"
+        "2cff6e81901ac154"
+        "f2d548ce"                   # AES-GCM ciphertext + tag
+        "000000b0"                   # wide atom size echo (176)
+    )
+    data += bytearray(_TWPD_WIDE)
 
     return data
 

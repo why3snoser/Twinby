@@ -1,1071 +1,117 @@
-<!DOCTYPE html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Twinby Tool</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#0d0d0d;--bg2:#161616;--bg3:#1e1e1e;--bg4:#252525;
-  --fg:#e0e0e0;--fg2:#888;--fg3:#555;
-  --accent:#4a9;--accent2:#3a8;--red:#e55;--yellow:#da3;
-  --radius:8px;--gap:12px;
-}
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-body{font:500 14px/1.5 'Inter',sans-serif;background:var(--bg);color:var(--fg);-webkit-font-smoothing:antialiased}
-button{cursor:pointer;font:inherit;font-weight:600;border:1px solid var(--fg3);background:var(--bg3);color:var(--fg);border-radius:var(--radius);padding:6px 14px;transition:.15s}
-button:hover{border-color:var(--accent);color:var(--accent)}
-button.primary{background:var(--accent);color:#000;border-color:var(--accent);font-weight:600}
-button.primary:hover{background:var(--accent2)}
-button.danger{border-color:var(--red);color:var(--red)}
-button.danger:hover{background:var(--red);color:#fff}
-button.small{padding:3px 8px;font-size:12px}
-input,textarea,select{font:inherit;background:var(--bg3);color:var(--fg);border:1px solid var(--fg3);border-radius:var(--radius);padding:6px 10px;width:100%;outline:none;transition:.15s}
-input:focus,textarea:focus,select:focus{border-color:var(--accent)}
-textarea{resize:vertical;min-height:80px}
-select{padding:6px 8px}
-label{display:block;font-size:12px;color:var(--fg2);margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px;font-weight:500}
-fieldset{border:1px solid var(--fg3);border-radius:var(--radius);padding:var(--gap);margin-bottom:var(--gap)}
-legend{padding:0 6px;font-size:13px;color:var(--accent);font-weight:600}
-.row{display:flex;gap:var(--gap);flex-wrap:wrap}
-.row>*{flex:1;min-width:140px}
-.col{display:flex;flex-direction:column;gap:var(--gap)}
-
-.tabs{display:flex;border-bottom:1px solid var(--fg3);margin-bottom:16px;position:sticky;top:0;background:var(--bg);z-index:10;padding-top:8px}
-.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--fg2);padding:10px 20px;font-size:15px;font-weight:600}
-.tabs button.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tabs button:hover{color:var(--fg)}
-.tab-content{display:none;padding:0 16px 16px}
-.tab-content.active{display:block}
-
-.card{background:var(--bg2);border:1px solid var(--fg3);border-radius:var(--radius);padding:var(--gap);margin-bottom:8px;transition:.15s}
-.card:hover{border-color:var(--fg2)}
-.card.selected{border-color:var(--accent)}
-.card-header{display:flex;justify-content:space-between;align-items:center;gap:8px}
-
-.dash{display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:16px}
-.dash-item{flex:1;min-width:120px;background:var(--bg2);border:1px solid var(--fg3);border-radius:var(--radius);padding:12px;text-align:center}
-.dash-item .num{font-size:28px;font-weight:700;color:var(--accent)}
-.dash-item .lbl{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
-
-.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
-.badge.ok{background:#1a3a2a;color:#4a9}
-.badge.warn{background:#3a2a1a;color:#da3}
-.badge.info{background:#1a2a3a;color:#49a}
-
-.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;max-height:300px;overflow-y:auto;padding:4px 0}
-.chip{padding:3px 10px;border-radius:14px;font-size:12px;border:1px solid var(--fg3);background:var(--bg3);cursor:pointer;transition:.15s;white-space:nowrap;user-select:none}
-.chip.on{background:var(--accent);color:#000;border-color:var(--accent)}
-.chip:hover{border-color:var(--accent)}
-
-.log{background:var(--bg2);border:1px solid var(--fg3);border-radius:var(--radius);padding:10px;font-size:12px;font-family:monospace;white-space:pre-wrap;max-height:400px;overflow-y:auto;color:var(--fg2)}
-
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:var(--fg3);border-radius:3px}
-
-.container{max-width:1100px;margin:0 auto;padding:8px}
-.mt{margin-top:var(--gap)}
-.mb{margin-bottom:var(--gap)}
-.text-sm{font-size:12px}
-.text-muted{color:var(--fg2)}
-.hidden{display:none!important}
-.flex{display:flex;align-items:center;gap:8px}
-.flex-wrap{flex-wrap:wrap}
-.grow{flex:1}
-.text-right{text-align:right}
-
-.file-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:var(--radius);border:1px dashed var(--accent);background:rgba(68,170,153,.08);color:var(--accent);font-weight:600;cursor:pointer;transition:.15s}
-.file-btn:hover{background:rgba(68,170,153,.18);border-style:solid}
-.file-btn svg{width:18px;height:18px;fill:currentColor}
-.file-btn input[type="file"]{display:none}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#11131b">
+  <title>Twinby Soft — демо</title>
+  <style>
+    :root{color-scheme:dark;--bg:#11131b;--panel:#191c27;--panel2:#202432;--line:#2c3040;--text:#f4f5fa;--muted:#9299ad;--violet:#a893ff;--mint:#83e6cd;--pink:#ff9db5}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 80% -10%,#332753 0,transparent 34%),var(--bg);color:var(--text);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh}
+    button{font:inherit;color:inherit}.shell{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}.side{padding:28px 18px;border-right:1px solid var(--line);background:#141620cc;display:flex;flex-direction:column}.brand{display:flex;gap:12px;align-items:center;padding:0 10px 34px}.logo{width:38px;height:38px;border-radius:13px;background:linear-gradient(135deg,#b9a7ff,#ec9ab9);display:grid;place-items:center;color:#191522;font-weight:900;font-size:19px;box-shadow:0 8px 28px #a893ff33}.brand strong{display:block;font-size:16px;letter-spacing:.2px}.brand small{color:var(--muted);font-size:12px}.label{padding:0 12px 9px;color:#737a8e;font-size:10px;letter-spacing:1.5px;font-weight:750}.nav{display:grid;gap:6px}.nav button{width:100%;border:1px solid transparent;background:transparent;text-align:left;padding:11px 12px;border-radius:12px;color:#aeb3c3;cursor:pointer;transition:.18s}.nav button:hover{background:#ffffff08;color:white}.nav button.active{background:#a893ff17;color:#d4c9ff;border-color:#a893ff28}.ico{display:inline-grid;place-items:center;width:22px;margin-right:8px;font-size:16px}.side-note{margin-top:auto;border:1px solid var(--line);background:linear-gradient(145deg,#1a1d29,#171923);padding:15px;border-radius:16px}.side-note span{color:var(--mint);font-size:11px;font-weight:700}.side-note p{margin:7px 0 0;color:var(--muted);font-size:12px}.main{min-width:0;padding:26px clamp(20px,4vw,58px) 50px;max-width:1500px;width:100%;margin:0 auto}.top{height:48px;display:flex;align-items:center;justify-content:space-between;margin-bottom:38px}.crumb{color:var(--muted);font-size:13px}.crumb b{color:#e7e8ee;font-weight:600}.mode{display:flex;align-items:center;gap:9px;border:1px solid #a893ff36;background:#a893ff10;padding:8px 12px;border-radius:30px;color:#d3c8ff;font-size:12px;font-weight:650}.dot{width:7px;height:7px;border-radius:50%;background:var(--violet);box-shadow:0 0 12px var(--violet)}.intro{display:flex;justify-content:space-between;align-items:end;gap:24px;margin-bottom:26px}.eyebrow{color:var(--violet);font-size:11px;letter-spacing:1.5px;font-weight:800;text-transform:uppercase}.intro h1{font-size:clamp(28px,4vw,40px);line-height:1.14;letter-spacing:-1.2px;margin:8px 0}.intro p{margin:0;color:var(--muted);max-width:580px}.btn{border:0;border-radius:12px;padding:11px 16px;background:linear-gradient(110deg,#b09cff,#e09bb9);color:#191521;font-weight:750;cursor:pointer;box-shadow:0 8px 26px #a893ff20;transition:transform .16s,filter .16s}.btn:hover{transform:translateY(-1px);filter:brightness(1.06)}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:26px 0}.stat,.card{background:linear-gradient(145deg,#1b1e29,#171923);border:1px solid var(--line);border-radius:18px}.stat{padding:18px 19px;position:relative;overflow:hidden}.stat:after{content:"";position:absolute;width:90px;height:90px;border-radius:50%;right:-35px;top:-40px;background:#a893ff12}.stat-top{color:var(--muted);font-size:12px;display:flex;justify-content:space-between}.stat-value{font-size:24px;font-weight:750;letter-spacing:-.5px;margin-top:10px}.stat-hint{color:#788093;font-size:11px;margin-top:2px}.layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(270px,.85fr);gap:16px}.card{padding:21px}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:17px}.card h2{font-size:16px;margin:0;letter-spacing:-.2px}.sub{color:var(--muted);font-size:12px;margin-top:4px}.tag{font-size:10px;border:1px solid #83e6cd36;color:var(--mint);background:#83e6cd0c;border-radius:20px;padding:5px 9px;font-weight:700;white-space:nowrap}.preview{border:1px solid #343747;border-radius:15px;overflow:hidden;background:#141620}.cover{height:115px;background:radial-gradient(circle at 75% 15%,#e8a4bb66,transparent 25%),radial-gradient(circle at 20% 90%,#9c86fc66,transparent 40%),linear-gradient(120deg,#29233b,#202633 55%,#322439);position:relative}.cover:after{content:"";position:absolute;inset:auto 0 0;height:45px;background:linear-gradient(transparent,#141620)}.avatar{width:62px;height:62px;border-radius:21px;border:3px solid #191c27;background:linear-gradient(135deg,#b6a3ff,#ef9fb4);display:grid;place-items:center;color:#211b2e;font-size:20px;font-weight:800;margin-top:-33px;position:relative;z-index:1}.preview-content{padding:0 17px 17px}.person{font-size:17px;font-weight:700;margin-top:8px}.person span{color:#aab0c1;font-weight:500}.city{font-size:12px;color:var(--muted);margin-top:2px}.chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px}.chip{font-size:10px;color:#c6c9d4;background:#ffffff0a;border:1px solid #ffffff10;border-radius:20px;padding:5px 9px}.empty{padding:16px;border:1px dashed #3a3e50;border-radius:13px;color:var(--muted);font-size:12px;line-height:1.55}.empty b{color:#e3e4eb;font-weight:650}.checks{display:grid;gap:12px;margin:16px 0}.check{display:flex;gap:11px;align-items:flex-start;color:#b9becc;font-size:12px}.check i{font-style:normal;width:21px;height:21px;border-radius:7px;background:#a893ff17;color:#c7baff;display:grid;place-items:center;flex:0 0 auto}.divider{height:1px;background:var(--line);margin:18px 0}.footnote{font-size:11px;color:#7d8497;line-height:1.55}.toast{position:fixed;right:22px;bottom:22px;background:#242837;border:1px solid #3d4255;border-radius:12px;padding:12px 16px;box-shadow:0 12px 35px #0008;color:#e7e8ef;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;max-width:min(360px,calc(100vw - 40px));font-size:13px}.toast.show{opacity:1;transform:translateY(0)}
+    .view{display:none}.view.active{display:block}.nav button{display:flex;align-items:center}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.field{display:grid;gap:6px}.field label{font-size:12px;color:#aeb3c3}.field input,.field textarea{width:100%;border:1px solid #35394a;border-radius:11px;background:#141620;color:var(--text);padding:11px 12px;font:inherit;outline:none}.field input:focus,.field textarea:focus{border-color:var(--violet);box-shadow:0 0 0 3px #a893ff18}.field textarea{min-height:90px;resize:vertical}.form-actions{display:flex;gap:10px;align-items:center;margin-top:16px}.btn.secondary{background:#ffffff0a;color:#d8dbe5;border:1px solid var(--line);box-shadow:none}.settings-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}.settings-row:last-child{border-bottom:0}.toggle{appearance:none;width:42px;height:24px;background:#3a3e50;border-radius:30px;position:relative;cursor:pointer;transition:.2s}.toggle:before{content:"";position:absolute;width:18px;height:18px;border-radius:50%;top:3px;left:3px;background:#e7e8ef;transition:.2s}.toggle:checked{background:#8d79df}.toggle:checked:before{left:21px;background:white}.status-line{color:var(--muted);font-size:12px;margin-top:12px}    @media(max-width:900px){.shell{grid-template-columns:76px minmax(0,1fr)}.side{padding:22px 10px;align-items:center}.brand{padding:0 0 30px}.brand div:last-child,.label,.nav .navtext,.side-note{display:none}.nav{width:100%}.nav button{text-align:center;padding:11px 4px}.ico{margin:0}.layout{grid-template-columns:1fr}}
+    body.compact .stat{padding:13px 15px}body.compact .card{padding:16px}body.compact .grid{gap:10px}
+    @media(max-width:620px){.shell{display:block}.side{display:none}.main{padding:18px 16px 35px}.top{margin-bottom:26px}.intro{display:block}.intro .btn{margin-top:17px}.grid{grid-template-columns:1fr;gap:10px;margin:20px 0}.stat{padding:15px 17px}.layout{gap:12px}.card{padding:17px}.mode{font-size:11px}.crumb{font-size:12px}}
+  </style>
 </head>
 <body>
-<div class="container">
-<div class="tabs">
-  <button class="active" onclick="switchTab('settings')">Настройки</button>
-  <button onclick="switchTab('presets')">Пресеты</button>
-  <button onclick="switchTab('accounts')">Аккаунты</button>
-</div>
-
-<!-- ==================== TAB 1: НАСТРОЙКИ ==================== -->
-<div id="tab-settings" class="tab-content active">
-
-  <fieldset>
-    <legend>VK аккаунты</legend>
-    <label>Пул аккаунтов (формат: id:pass:token, по одному на строку)</label>
-    <textarea id="vkPool" rows="6" oninput="saveSettings()"></textarea>
-    <div class="flex mt" style="gap:12px">
-      <span class="text-sm text-muted" id="vkPoolStats"></span>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Прокси</legend>
-    <label>Пул прокси (формат: ip:port:user:pass, по одному на строку)</label>
-    <textarea id="proxyPool" rows="4" oninput="saveSettings()" placeholder="74.81.81.81:10000:user:pass"></textarea>
-    <div class="flex mt" style="gap:12px">
-      <span class="text-sm text-muted" id="proxyPoolStats"></span>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Профиль</legend>
-    <div class="row">
-      <div><label>Имя</label><input type="text" id="sName" oninput="saveSettings()"></div>
-      <div><label>Дата рождения</label><input type="date" id="sBirthday" oninput="saveSettings()"></div>
-      <div style="max-width:150px"><label>Пол</label>
-        <select id="sGender" onchange="saveSettings()">
-          <option value="m">Мужской</option>
-          <option value="f">Женский</option>
-        </select>
-      </div>
-    </div>
-    <div class="mt">
-      <label>О себе</label>
-      <textarea id="sAbout" rows="3" oninput="saveSettings()"></textarea>
-    </div>
-    <label class="mt" style="display:flex;align-items:flex-start;gap:8px">
-      <input type="checkbox" id="acceptTwinbyTerms" style="margin-top:4px">
-      <span>&#1071; &#1087;&#1088;&#1080;&#1085;&#1080;&#1084;&#1072;&#1102; &#1055;&#1086;&#1083;&#1080;&#1090;&#1080;&#1082;&#1091; &#1082;&#1086;&#1085;&#1092;&#1080;&#1076;&#1077;&#1085;&#1094;&#1080;&#1072;&#1083;&#1100;&#1085;&#1086;&#1089;&#1090;&#1080; &#1080; &#1055;&#1086;&#1083;&#1100;&#1079;&#1086;&#1074;&#1072;&#1090;&#1077;&#1083;&#1100;&#1089;&#1082;&#1086;&#1077; &#1089;&#1086;&#1075;&#1083;&#1072;&#1096;&#1077;&#1085;&#1080;&#1077; Twinby &#1080; &#1087;&#1086;&#1076;&#1090;&#1074;&#1077;&#1088;&#1078;&#1076;&#1072;&#1102;, &#1095;&#1090;&#1086; &#1084;&#1085;&#1077; &#1080;&#1089;&#1087;&#1086;&#1083;&#1085;&#1080;&#1083;&#1086;&#1089;&#1100; 18 &#1083;&#1077;&#1090;.</span>
-    </label>
-  </fieldset>
-
-  <fieldset>
-    <legend>Фото</legend>
-    <div class="row">
-      <div style="flex:3">
-        <label>Пул фото (до 20 штук)</label>
-        <label class="file-btn mt">
-          <svg viewBox="0 0 24 24"><path d="M19 7v2.99s-1.99.01-2 0V7h-3s.01-1.99 0-2h3V2h2v3h3v2h-3zm-3 4V8h-3V5H5a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2v-8h-3zM5 19l3-4 2 3 3-4 4 5H5z"/></svg>
-          Выбрать фото
-          <input type="file" id="photoFiles" multiple accept="image/jpeg,image/png,image/webp" onchange="handlePhotoUpload()">
-        </label>
-        <div id="photoPreview" class="flex flex-wrap mt" style="gap:6px"></div>
-      </div>
-      <div style="max-width:200px">
-        <label>Фото на аккаунт (1-6)</label>
-        <input type="number" id="sPhotoCount" min="1" max="6" value="1" oninput="saveSettings()">
-      </div>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Видео верификация</legend>
-    <label>Пул видео (макс. 3 попытки на аккаунт)</label>
-    <label class="file-btn mt">
-      <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
-      Выбрать видео
-      <input type="file" id="videoFiles" multiple accept="video/*" onchange="handleVideoUpload()">
-    </label>
-    <div id="videoList" class="mt text-sm text-muted"></div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Города</legend>
-    <div class="flex flex-wrap mb" style="gap:6px">
-      <button class="small" onclick="filterCities(0)">Все</button>
-      <button class="small" onclick="filterCities(100000)">100k+</button>
-      <button class="small" onclick="filterCities(200000)">200k+</button>
-      <button class="small" onclick="filterCities(500000)">500k+</button>
-      <button class="small" onclick="filterCities(1000000)">1M+</button>
-      <button class="small" onclick="selectAllVisible()">Выбрать всё</button>
-      <button class="small" onclick="deselectAllVisible()">Снять всё</button>
-      <span class="text-sm text-muted" id="cityStats"></span>
-    </div>
-    <div id="cityChips" class="chips"></div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Фильтры поиска</legend>
-    <div class="row">
-      <div><label>Радиус (км)</label><input type="number" id="sDistance" value="100" oninput="saveSettings()"></div>
-      <div><label>Возраст от</label><input type="number" id="sMinAge" value="18" oninput="saveSettings()"></div>
-      <div><label>Возраст до</label><input type="number" id="sMaxAge" value="35" oninput="saveSettings()"></div>
-      <div><label>Пол в поиске</label>
-        <select id="sFilterGender" onchange="saveSettings()">
-          <option value="f">Девушки</option>
-          <option value="m">Парни</option>
-          <option value="n">Все</option>
-        </select>
-      </div>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>Дополнительные поля</legend>
-    <div class="row">
-      <div><label>Рост (см)</label><input type="number" id="sHeight" min="50" max="250" oninput="saveSettings()"></div>
-      <div><label>Образование</label>
-        <select id="sEducation" onchange="saveSettings()">
-          <option value="">—</option>
-          <option value="0">Среднее</option>
-          <option value="1">Высшее</option>
-          <option value="2">Кандидат наук/PhD</option>
-        </select>
-      </div>
-      <div><label>Дети</label>
-        <select id="sChildren" onchange="saveSettings()">
-          <option value="">—</option>
-          <option value="0">Нет</option>
-          <option value="1">Нет, но хотелось бы</option>
-          <option value="2">Уже есть</option>
-        </select>
-      </div>
-    </div>
-    <div class="row mt">
-      <div><label>Алкоголь</label>
-        <select id="sAlcohol" onchange="saveSettings()">
-          <option value="">—</option>
-          <option value="0">Резко негативно</option>
-          <option value="1">Нейтрально</option>
-          <option value="2">Положительно</option>
-        </select>
-      </div>
-      <div><label>Курение</label>
-        <select id="sSmoking" onchange="saveSettings()">
-          <option value="">—</option>
-          <option value="0">Резко негативно</option>
-          <option value="1">Нейтрально</option>
-          <option value="2">Положительно</option>
-        </select>
-      </div>
-      <div><label>Религия</label>
-        <select id="sReligion" onchange="saveSettings()">
-          <option value="">—</option>
-        </select>
-      </div>
-    </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>RuCaptcha</legend>
-    <div class="row">
-      <div style="flex:3"><label>API ключ</label><input type="text" id="sRucaptchaKey" oninput="saveSettings()"></div>
-      <div style="flex:1;padding-top:18px">
-        <button class="small" onclick="testRucaptcha()">Проверить баланс</button>
-      </div>
-    </div>
-    <div id="rucaptchaStatus" class="text-sm text-muted mt"></div>
-  </fieldset>
-
-</div>
-
-<!-- ==================== TAB 2: ПРЕСЕТЫ ==================== -->
-<div id="tab-presets" class="tab-content">
-
-  <div class="dash" id="presetDash">
-    <div class="dash-item"><div class="num" id="dTotal">0</div><div class="lbl">Аккаунтов</div></div>
-    <div class="dash-item"><div class="num" id="dVerified">0</div><div class="lbl">Верифицировано</div></div>
-    <div class="dash-item"><div class="num" id="dPremium">0</div><div class="lbl">Премиум</div></div>
-    <div class="dash-item"><div class="num" id="dLikes">0</div><div class="lbl">Лайков</div></div>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand"><div class="logo">t</div><div><strong>Twinby Soft</strong><small>тестовая панель</small></div></div>
+      <div class="label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <nav class="nav" aria-label="Основная навигация">
+        <button class="active" type="button" data-view="overview" aria-current="page"><span class="ico">⌂</span><span class="navtext">Обзор</span></button>
+        <button type="button" data-view="profile"><span class="ico">◉</span><span class="navtext">Профиль</span></button>
+        <button type="button" data-view="settings"><span class="ico">⚙</span><span class="navtext">Настройки</span></button>
+      </nav>
+      <div class="side-note"><span>● ДЕМО-РЕЖИМ</span><p>Локальный режим. Изменения сохраняются в этом браузере.</p></div>
+    </aside>
+    <main class="main">
+      <div class="top"><div class="crumb">Twinby Soft <span aria-hidden="true">/</span> <b id="crumbTitle">Обзор</b></div><div class="mode"><span class="dot"></span> Локальный режим</div></div>
+      <section class="view active" id="view-overview">
+        <section class="intro"><div><div class="eyebrow">Пространство проекта</div><h1>Добро пожаловать</h1><p>Автономная демо-панель: переходы, редактирование примера и настройки работают прямо в браузере.</p></div><button class="btn" type="button" data-go="profile">Открыть профиль&nbsp; ↗</button></section>
+        <section class="grid" aria-label="Состояние макета">
+          <article class="stat"><div class="stat-top"><span>Интерфейс</span><span>✦</span></div><div class="stat-value">Готов</div><div class="stat-hint">Работает без сервера</div></article>
+          <article class="stat"><div class="stat-top"><span>Данные</span><span>⌁</span></div><div class="stat-value">Локально</div><div class="stat-hint">Сохранение в браузере</div></article>
+          <article class="stat"><div class="stat-top"><span>Подключение</span><span>◇</span></div><div class="stat-value">Отключено</div><div class="stat-hint">Внешние запросы не выполняются</div></article>
+        </section>
+        <section class="layout">
+          <article class="card"><div class="card-head"><div><h2>Предпросмотр профиля</h2><div class="sub">Локальные демо-данные</div></div><span class="tag">НА ЭТОМ УСТРОЙСТВЕ</span></div>
+            <div class="preview"><div class="cover"></div><div class="preview-content"><div class="avatar" id="avatarLetter">T</div><div class="person"><span id="profileName">Тестовый профиль</span> <span>· демо</span></div><div class="city" id="profileCity">Город не задан</div><div class="chips"><span class="chip">Предпросмотр</span><span class="chip">Демо-данные</span></div></div></div>
+          </article>
+          <article class="card"><div class="card-head"><div><h2>Что доступно</h2><div class="sub">Работает автономно</div></div></div><div class="checks"><div class="check"><i>✓</i><span>Навигация между разделами.</span></div><div class="check"><i>✓</i><span>Редактирование и сохранение демо-профиля.</span></div><div class="check"><i>✓</i><span>Сброс данных и настройки темы интерфейса.</span></div></div><div class="divider"></div><div class="empty"><b>Локальный режим:</b> данные остаются в хранилище текущего браузера. VK, Twinby и API не подключены.</div></article>
+        </section>
+      </section>
+      <section class="view" id="view-profile">
+        <section class="intro"><div><div class="eyebrow">Демо-раздел</div><h1>Профиль</h1><p>Измени пример — карточка на главной обновится автоматически.</p></div></section>
+        <article class="card"><div class="card-head"><div><h2>Данные для предпросмотра</h2><div class="sub">Сохраняются только в этом браузере</div></div><span class="tag">ЛОКАЛЬНО</span></div>
+          <form id="profileForm"><div class="form-grid"><div class="field"><label for="nameInput">Имя в демо</label><input id="nameInput" maxlength="40" autocomplete="off" placeholder="Например, Алекс"></div><div class="field"><label for="cityInput">Город</label><input id="cityInput" maxlength="60" autocomplete="off" placeholder="Например, Новосибирск"></div><div class="field" style="grid-column:1/-1"><label for="aboutInput">О себе</label><textarea id="aboutInput" maxlength="240" placeholder="Короткое описание для карточки"></textarea></div></div><div class="form-actions"><button class="btn" type="submit">Сохранить демо-профиль</button><button class="btn secondary" type="button" id="resetProfile">Сбросить</button></div><div class="status-line" id="profileStatus" aria-live="polite">Изменения хранятся только локально.</div></form>
+        </article>
+      </section>
+      <section class="view" id="view-settings">
+        <section class="intro"><div><div class="eyebrow">Локальные параметры</div><h1>Настройки</h1><p>Управляй сохранёнными демо-данными на этом устройстве.</p></div></section>
+        <article class="card"><div class="card-head"><div><h2>Хранение и отображение</h2><div class="sub">Настройки применяются только к этой странице</div></div></div>
+          <div class="settings-row"><div><b>Компактный режим</b><div class="sub">Уменьшить отступы карточек</div></div><input class="toggle" id="compactToggle" type="checkbox" aria-label="Компактный режим"></div>
+          <div class="settings-row"><div><b>Очистить локальные данные</b><div class="sub">Удалить демо-профиль и настройки из этого браузера</div></div><button class="btn secondary" type="button" id="clearData">Очистить</button></div>
+          <div class="status-line" id="settingsStatus" aria-live="polite">Никакие данные не отправляются на сервер.</div>
+        </article>
+      </section>
+      <p class="footnote" style="margin:18px 2px 0">Twinby Soft · автономный демонстрационный интерфейс · внешние запросы отключены</p>
+    </main>
   </div>
-
-  <div class="flex mb" style="gap:8px">
-    <div class="grow"><label>Имя пресета</label><input type="text" id="newPresetName"></div>
-    <div style="width:140px"><label>Кол-во аккаунтов</label><input type="number" id="newPresetCount" min="1" value="5"></div>
-    <div style="padding-top:18px"><button class="primary" onclick="createPreset()">+ Пресет</button></div>
-  </div>
-
-  <div class="flex mb" style="gap:8px;justify-content:flex-end">
-    <button class="small" onclick="exportData()">⬇ Экспорт данных</button>
-    <label class="file-btn" style="padding:3px 10px;font-size:12px">⬆ Импорт
-      <input type="file" accept=".json" onchange="importData(this)">
-    </label>
-  </div>
-
-  <div id="presetsList"></div>
-  <div id="presetDetail" class="hidden"></div>
-  <div id="presetLog" class="log hidden mt"></div>
-</div>
-
-<!-- ==================== TAB 3: АККАУНТЫ ==================== -->
-<div id="tab-accounts" class="tab-content">
-  <div class="flex mb" style="gap:8px">
-    <input type="text" id="accSearch" oninput="renderAccounts()" style="max-width:300px">
-    <select id="accFilterStatus" onchange="renderAccounts()" style="max-width:200px">
-      <option value="">Все</option>
-      <option value="verified">Верифицированы</option>
-      <option value="unverified">Не верифицированы</option>
-      <option value="premium">С премиумом</option>
-    </select>
-  </div>
-  <div id="accountsList"></div>
-  <div id="accountDetail" class="hidden mt"></div>
-</div>
-
-</div>
-
-<script>
-/* ===================== STATE ===================== */
-let SETTINGS = {};
-let PRESETS = {};
-let ALL_ACCOUNTS = [];
-let CITIES = [];
-let CITY_FILTER = 0;
-let PHOTOS = [];
-let VIDEOS = [];
-let OPEN_PRESET = null;
-
-const RELIGIONS = [
-  ["1000096204387942411","Буддизм"],["1000096763409825800","Еврейство"],
-  ["1000097003157913601","Индуизм"],["1000097220562550792","Ислам"],
-  ["1020795595809488907","Иудаизм"],["1000097464401821698","Католицизм"],
-  ["1000097877049311242","Конфуцианство"],["1000098184962867202","Православие"],
-  ["1000098431279661065","Протестантизм"],["1000098728882503684","Светский гуманизм"],
-  ["1000100355977117697","Агностицизм"],["1000099600556851210","Атеизм"],
-  ["1020796526629814282","Деизм"]
-];
-
-/* ===================== TABS ===================== */
-function switchTab(name) {
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.tabs button').forEach(el => el.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  const idx = {settings:0, presets:1, accounts:2}[name] || 0;
-  document.querySelectorAll('.tabs button')[idx].classList.add('active');
-  if (name === 'presets') { loadPresets(); }
-  if (name === 'accounts') {
-    fetch('/api/presets').then(r=>r.json()).then(data => {
-      PRESETS = data||{};
-      rebuildAll();
-      renderAccounts(true);
-    }).catch(()=>{});
-  }
-}
-
-/* ===================== SETTINGS ===================== */
-function loadSettings() {
-  fetch('/api/settings').then(r=>r.json()).then(data => {
-    SETTINGS = data || {};
-    applySettings();
-  }).catch(()=>{});
-}
-
-function applySettings() {
-  const s = SETTINGS;
-  document.getElementById('vkPool').value = s.vk_pool || '';
-  document.getElementById('sName').value = s.name || '';
-  document.getElementById('sBirthday').value = s.birthday || '';
-  document.getElementById('sGender').value = s.gender || 'm';
-  document.getElementById('sAbout').value = s.about || '';
-  document.getElementById('sPhotoCount').value = s.photo_count || 1;
-  document.getElementById('sDistance').value = s.distance || 100;
-  document.getElementById('sMinAge').value = s.min_age || 18;
-  document.getElementById('sMaxAge').value = s.max_age || 35;
-  document.getElementById('sFilterGender').value = s.filter_gender || 'f';
-  document.getElementById('sHeight').value = s.height || '';
-  document.getElementById('sEducation').value = s.education || '';
-  document.getElementById('sChildren').value = s.children || '';
-  document.getElementById('sAlcohol').value = s.alcohol || '';
-  document.getElementById('sSmoking').value = s.smoking || '';
-  document.getElementById('sReligion').value = s.religion || '';
-  document.getElementById('sRucaptchaKey').value = s.rucaptcha_key || '';
-  document.getElementById('proxyPool').value = s.proxy_pool || '';
-  updateVkStats();
-  updateProxyStats();
-}
-
-function gatherSettings() {
-  return {
-    vk_pool: document.getElementById('vkPool').value,
-    name: document.getElementById('sName').value,
-    birthday: document.getElementById('sBirthday').value,
-    gender: document.getElementById('sGender').value,
-    about: document.getElementById('sAbout').value,
-    photo_count: parseInt(document.getElementById('sPhotoCount').value) || 1,
-    distance: parseInt(document.getElementById('sDistance').value) || 100,
-    min_age: parseInt(document.getElementById('sMinAge').value) || 18,
-    max_age: parseInt(document.getElementById('sMaxAge').value) || 35,
-    filter_gender: document.getElementById('sFilterGender').value,
-    height: document.getElementById('sHeight').value,
-    education: document.getElementById('sEducation').value,
-    children: document.getElementById('sChildren').value,
-    alcohol: document.getElementById('sAlcohol').value,
-    smoking: document.getElementById('sSmoking').value,
-    religion: document.getElementById('sReligion').value,
-    rucaptcha_key: document.getElementById('sRucaptchaKey').value,
-    proxy_pool: document.getElementById('proxyPool').value,
-    selected_cities: SETTINGS.selected_cities || []
-  };
-}
-
-let _saveTimer = null;
-function saveSettings() {
-  SETTINGS = gatherSettings();
-  updateVkStats();
-  updateProxyStats();
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(() => {
-    fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(SETTINGS)});
-  }, 400);
-}
-
-function updateVkStats() {
-  const lines = (SETTINGS.vk_pool||'').split('\n').filter(l=>l.trim());
-  const usedTokens = getUsedVkTokens();
-  const free = lines.filter(l => {
-    const parts = l.trim().split(':');
-    const tok = parts.length >= 3 ? parts.slice(2).join(':') : parts[parts.length-1];
-    return !usedTokens.has(tok);
-  }).length;
-  document.getElementById('vkPoolStats').textContent =
-    `Всего: ${lines.length} | Свободных: ${free} | Использовано: ${usedTokens.size}`;
-}
-
-function parseVkPool() {
-  return (SETTINGS.vk_pool||'').split('\n').filter(l=>l.trim()).map(line => {
-    const parts = line.trim().split(':');
-    if (parts.length >= 3) return {id:parts[0], pass:parts[1], token:parts.slice(2).join(':')};
-    if (parts.length === 2) return {id:parts[0], pass:'', token:parts[1]};
-    return {id:'', pass:'', token:parts[0]};
-  });
-}
-
-function getUsedVkTokens() {
-  const used = new Set();
-  for (const p of Object.values(PRESETS)) {
-    for (const acc of (p.accounts||[])) {
-      if (acc.vk_token) used.add(acc.vk_token);
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script>
+    const STORAGE_KEY = 'twinby-soft-demo-v1';
+    const defaults = {name:'Тестовый профиль', city:'', about:'', compact:false};
+    const toast = document.getElementById('toast');
+    let toastTimer;
+    function readState(){try{return {...defaults,...JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')}}catch{return {...defaults}}}
+    let state = readState();
+    function saveState(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state));}
+    function notify(message){toast.textContent=message;toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('show'),2500)}
+    function render(){
+      document.getElementById('profileName').textContent=state.name||'Тестовый профиль';
+      document.getElementById('profileCity').textContent=state.city||'Город не задан';
+      document.getElementById('avatarLetter').textContent=(state.name||'T').trim().charAt(0).toUpperCase()||'T';
+      document.getElementById('nameInput').value=state.name==='Тестовый профиль'?'':state.name;
+      document.getElementById('cityInput').value=state.city;
+      document.getElementById('aboutInput').value=state.about;
+      document.getElementById('compactToggle').checked=state.compact;
+      document.body.classList.toggle('compact',state.compact);
     }
-  }
-  return used;
-}
-
-function parseProxyPool() {
-  return (SETTINGS.proxy_pool||'').split('\n').filter(l=>l.trim()).map(l=>l.trim());
-}
-let _proxyIdx = 0;
-function getNextProxy() {
-  const pool = parseProxyPool();
-  if (!pool.length) return '';
-  const p = pool[_proxyIdx % pool.length];
-  _proxyIdx++;
-  return p;
-}
-function updateProxyStats() {
-  const lines = parseProxyPool();
-  const el = document.getElementById('proxyPoolStats');
-  if (el) el.textContent = `Всего прокси: ${lines.length}`;
-}
-
-function getFreeVk(count) {
-  const pool = parseVkPool();
-  const used = getUsedVkTokens();
-  return pool.filter(a => !used.has(a.token)).slice(0, count);
-}
-
-/* ===================== PHOTOS ===================== */
-function handlePhotoUpload() {
-  const files = Array.from(document.getElementById('photoFiles').files).slice(0, 20 - PHOTOS.length);
-  for (const f of files) {
-    const reader = new FileReader();
-    reader.onload = e => { PHOTOS.push({name:f.name, dataUrl:e.target.result, blob:f}); renderPhotos(); };
-    reader.readAsDataURL(f);
-  }
-}
-function removePhoto(i) { PHOTOS.splice(i,1); renderPhotos(); }
-function renderPhotos() {
-  document.getElementById('photoPreview').innerHTML = PHOTOS.map((p,i) =>
-    `<div style="position:relative;width:64px;height:64px;border-radius:6px;overflow:hidden;border:1px solid var(--fg3)">
-      <img src="${p.dataUrl}" style="width:100%;height:100%;object-fit:cover">
-      <div onclick="removePhoto(${i})" style="position:absolute;top:0;right:0;width:18px;height:18px;background:rgba(0,0,0,.7);color:#e55;font-size:14px;text-align:center;line-height:18px;cursor:pointer">&times;</div>
-    </div>`
-  ).join('');
-}
-
-/* ===================== VIDEOS ===================== */
-function handleVideoUpload() {
-  VIDEOS = Array.from(document.getElementById('videoFiles').files).map(f=>({name:f.name, blob:f}));
-  document.getElementById('videoList').textContent = VIDEOS.length ? 'Загружено: '+VIDEOS.map(v=>v.name).join(', ') : '';
-}
-
-/* ===================== CITIES ===================== */
-function loadCities() {
-  fetch('/api/cities').then(r=>r.json()).then(data => { CITIES = data||[]; renderCities(); }).catch(()=>{});
-}
-
-function filterCities(min) { CITY_FILTER = min; renderCities(); }
-
-function selectAllVisible() {
-  if (!SETTINGS.selected_cities) SETTINGS.selected_cities = [];
-  for (const c of CITIES.filter(c=>c.population>=CITY_FILTER)) {
-    if (!SETTINGS.selected_cities.includes(c.name)) SETTINGS.selected_cities.push(c.name);
-  }
-  saveSettings(); renderCities();
-}
-
-function deselectAllVisible() {
-  if (!SETTINGS.selected_cities) return;
-  const vis = new Set(CITIES.filter(c=>c.population>=CITY_FILTER).map(c=>c.name));
-  SETTINGS.selected_cities = SETTINGS.selected_cities.filter(n=>!vis.has(n));
-  saveSettings(); renderCities();
-}
-
-function toggleCity(name) {
-  if (!SETTINGS.selected_cities) SETTINGS.selected_cities = [];
-  const idx = SETTINGS.selected_cities.indexOf(name);
-  if (idx >= 0) SETTINGS.selected_cities.splice(idx,1); else SETTINGS.selected_cities.push(name);
-  saveSettings(); renderCities();
-}
-
-function renderCities() {
-  const sel = new Set(SETTINGS.selected_cities||[]);
-  const vis = CITIES.filter(c=>c.population>=CITY_FILTER);
-  const container = document.getElementById('cityChips');
-  container.innerHTML = vis.map(c => {
-    const on = sel.has(c.name) ? ' on' : '';
-    const pop = c.population >= 1e6 ? (c.population/1e6).toFixed(1)+'M' : Math.round(c.population/1e3)+'k';
-    return `<div class="chip${on}" data-city="${esc(c.name)}">${esc(c.name)} <span style="opacity:.5">${pop}</span></div>`;
-  }).join('');
-  container.onclick = e => {
-    const chip = e.target.closest('[data-city]');
-    if (chip) toggleCity(chip.dataset.city);
-  };
-  document.getElementById('cityStats').textContent = `Выбрано: ${sel.size} из ${vis.length}`;
-}
-
-/* ===================== PRESETS ===================== */
-function loadPresets() {
-  fetch('/api/presets').then(r=>r.json()).then(data => {
-    PRESETS = data||{};
-    rebuildAll();
-    renderPresets();
-    if (OPEN_PRESET && PRESETS[OPEN_PRESET]) renderPresetDetail();
-  }).catch(()=>{});
-}
-
-function savePresetsServer(cb) {
-  fetch('/api/presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(PRESETS)})
-    .then(r=>r.json()).then(d=>{
-      rebuildAll();
-      if(cb)cb();
-    }).catch(e=>{console.error('savePresets error:', e);});
-}
-
-function rebuildAll() {
-  ALL_ACCOUNTS = [];
-  for (const [pn,p] of Object.entries(PRESETS)) {
-    for (const a of (p.accounts||[])) ALL_ACCOUNTS.push({...a, preset:pn});
-  }
-  updateVkStats();
-  updateDash();
-  // Auto-refresh accounts tab if visible
-  if (document.getElementById('tab-accounts')?.classList.contains('active')) {
-    renderAccounts(true);
-  }
-}
-
-function updateDash() {
-  document.getElementById('dTotal').textContent = ALL_ACCOUNTS.length;
-  document.getElementById('dVerified').textContent = ALL_ACCOUNTS.filter(a=>a.verified).length;
-  document.getElementById('dPremium').textContent = ALL_ACCOUNTS.filter(a=>a.premium).length;
-  document.getElementById('dLikes').textContent = ALL_ACCOUNTS.reduce((s,a)=>s+(a.likes_done||0),0);
-}
-
-function createPreset() {
-  const name = document.getElementById('newPresetName').value.trim();
-  const count = parseInt(document.getElementById('newPresetCount').value)||5;
-  if (!name) return;
-  if (PRESETS[name]) { alert('Пресет "'+name+'" уже существует'); return; }
-  PRESETS[name] = {count, accounts:[]};
-  savePresetsServer(()=>renderPresets());
-  document.getElementById('newPresetName').value = '';
-}
-
-function deletePreset(name) {
-  if (!confirm('Удалить пресет "'+name+'"?')) return;
-  delete PRESETS[name];
-  if (OPEN_PRESET===name) { OPEN_PRESET=null; document.getElementById('presetDetail').classList.add('hidden'); }
-  savePresetsServer(()=>renderPresets());
-}
-
-function openPreset(name) {
-  OPEN_PRESET = name;
-  renderPresets();
-  renderPresetDetail();
-}
-
-function renderPresets() {
-  const box = document.getElementById('presetsList');
-  let html = '';
-  for (const [name, p] of Object.entries(PRESETS)) {
-    const accs = p.accounts||[];
-    const sel = OPEN_PRESET===name ? ' selected' : '';
-    const v = accs.filter(a=>a.verified).length;
-    const pr = accs.filter(a=>a.premium).length;
-    const lk = accs.reduce((s,a)=>s+(a.likes_done||0),0);
-    html += `<div class="card${sel}" onclick="openPreset('${esc(name)}')" style="cursor:pointer">
-      <div class="card-header">
-        <div><strong>${esc(name)}</strong>
-          <span class="text-sm text-muted" style="margin-left:8px">${accs.length} акк. | ✓${v} | 💎${pr} | ❤${lk}</span>
-        </div>
-        <button class="small danger" onclick="event.stopPropagation();deletePreset('${esc(name)}')">&times;</button>
-      </div>
-    </div>`;
-  }
-  if (!html) html = '<div class="text-sm text-muted">Нет пресетов</div>';
-  box.innerHTML = html;
-}
-
-function renderPresetDetail() {
-  const el = document.getElementById('presetDetail');
-  if (!OPEN_PRESET || !PRESETS[OPEN_PRESET]) { el.classList.add('hidden'); return; }
-  el.classList.remove('hidden');
-  const p = PRESETS[OPEN_PRESET];
-  const accs = p.accounts||[];
-
-  let html = `<fieldset><legend>${esc(OPEN_PRESET)} (нужно: ${p.count||'?'})</legend>`;
-  html += `<div class="flex flex-wrap mb" style="gap:8px">
-    <button class="primary" onclick="registerPreset('${esc(OPEN_PRESET)}')">Зарегистрировать</button>
-    <button onclick="recoverPreset('${esc(OPEN_PRESET)}')">♻ Восстановить</button>
-    <button onclick="autoLikePreset('${esc(OPEN_PRESET)}')">Автолайк</button>
-    <button onclick="checkStatusPreset('${esc(OPEN_PRESET)}')">Обновить статусы</button>
-  </div>`;
-
-  if (accs.length) {
-    html += '<div class="col" style="gap:4px">';
-    for (let i = 0; i < accs.length; i++) {
-      const a = accs[i];
-      const vb = a.verified ? '<span class="badge ok">✓</span>' : '<span class="badge warn">⚠️</span>';
-      const pb = a.premium ? '<span class="badge info">💎</span>' : '';
-      html += `<div class="card" style="padding:8px">
-        <div class="flex flex-wrap">
-          <span>${esc(a.city||'?')}</span>
-          <span class="text-sm text-muted">${esc(a.name||'')}${a.vk_id?' (VK:'+esc(a.vk_id)+')':''}</span>
-          ${vb}${pb}
-          <span class="text-sm text-muted grow text-right">❤ ${a.likes_done||0}</span>
-          <button class="small" onclick="event.stopPropagation();copyJwt('${esc(OPEN_PRESET)}',${i})">JWT</button>
-          <button class="small" onclick="event.stopPropagation();applyFilter('${esc(OPEN_PRESET)}',${i})">Фильтр</button>
-        </div>
-      </div>`;
+    function showView(name){
+      document.querySelectorAll('.view').forEach(view=>view.classList.toggle('active',view.id===`view-${name}`));
+      document.querySelectorAll('.nav [data-view]').forEach(button=>{const active=button.dataset.view===name;button.classList.toggle('active',active);if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current')});
+      const titles={overview:'Обзор',profile:'Профиль',settings:'Настройки'};
+      document.getElementById('crumbTitle').textContent=titles[name]||'Обзор';
     }
-    html += '</div>';
-  } else {
-    html += '<div class="text-sm text-muted mt">Нажмите «Зарегистрировать» для создания аккаунтов.</div>';
-  }
-  html += '</fieldset>';
-  el.innerHTML = html;
-}
-
-function copyJwt(preset, idx) {
-  const acc = PRESETS[preset]?.accounts?.[idx];
-  if (acc?.jwt) { navigator.clipboard.writeText(acc.jwt); logMsg('JWT скопирован: ' + (acc.city||'')); }
-}
-
-function applyFilter(preset, idx) {
-  const acc = PRESETS[preset]?.accounts?.[idx];
-  if (!acc?.jwt) { alert('Нет JWT'); return; }
-  logMsg('Применяю фильтр: ' + (acc.city||''));
-  fetch('/apply-preset', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({token:acc.jwt, proxy:acc.proxy||'', preset:{
-      latitude:acc.latitude, longitude:acc.longitude, city_name:acc.city,
-      distance:SETTINGS.distance||100, min_age:SETTINGS.min_age||18,
-      max_age:SETTINGS.max_age||35, filter_gender:SETTINGS.filter_gender||'f'
-    }})
-  }).then(r=>r.json()).then(d=>{const msg=Array.isArray(d.log)?d.log.join('\n'):(d.log||d.error||'done');logMsg((acc.city||'')+': '+msg);})
-   .catch(e=>logMsg('Ошибка: '+e));
-}
-
-/* ===================== REGISTRATION ===================== */
-async function registerPreset(presetName) {
-  const p = PRESETS[presetName];
-  if (!p) return;
-  const count = p.count || 5;
-  const existing = (p.accounts||[]).length;
-  const need = count - existing;
-  if (need <= 0) { logMsg('У пресета уже достаточно аккаунтов'); return; }
-
-  const freeVk = getFreeVk(need);
-  if (freeVk.length < need) {
-    alert(`Недостаточно свободных VK: нужно ${need}, есть ${freeVk.length}`);
-    return;
-  }
-  const selCities = SETTINGS.selected_cities || [];
-  if (!selCities.length) { alert('Выберите города в настройках'); return; }
-  if (!document.getElementById('acceptTwinbyTerms').checked) { alert('Accept Twinby terms and confirm age 18+ before registration.'); return; }
-  if (!PHOTOS.length) { alert('Add at least one photo for the profile onboarding step.'); return; }
-
-  showLog();
-  logMsg(`=== Регистрация "${presetName}": ${need} аккаунтов ===`);
-
-  const cityObjs = CITIES.filter(c => selCities.includes(c.name));
-  const picked = pickWeightedCities(cityObjs, need);
-
-  for (let i = 0; i < need; i++) {
-    const vk = freeVk[i];
-    const city = picked[i];
-    const proxy = getNextProxy();
-    logMsg(`[${i+1}/${need}] ${city.name} — VK ${vk.id} — proxy ${proxy||'нет'}...`);
-
-    try {
-      const resp = await fetch('/api/register-account', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          vk_token:vk.token, vk_id:vk.id, vk_pass:vk.pass,
-          proxy: proxy, accept_twinby_terms:true,
-          first_photo_data_url:PHOTOS[0].dataUrl, first_photo_name:PHOTOS[0].name,
-          name:SETTINGS.name, birthday:SETTINGS.birthday,
-          gender:SETTINGS.gender, about:SETTINGS.about,
-          latitude:city.lat, longitude:city.lon, city_name:city.name,
-          height:SETTINGS.height, education:SETTINGS.education, children:SETTINGS.children,
-          alcohol:SETTINGS.alcohol, smoking:SETTINGS.smoking, religion:SETTINGS.religion,
-          distance:SETTINGS.distance, min_age:SETTINGS.min_age,
-          max_age:SETTINGS.max_age, filter_gender:SETTINGS.filter_gender
-        })
-      });
-      const d = await resp.json();
-      if (d.log) { const lines = Array.isArray(d.log) ? d.log : [d.log]; lines.forEach(l => { if(l&&l.trim) logMsg(l); }); }
-      if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
-      logMsg(`  JWT получен (${d.user_id})`);
-      const accProxy = d.proxy || proxy;
-
-      const accObj = {
-        jwt:d.jwt, user_id:d.user_id, name:d.name||SETTINGS.name,
-        vk_id:vk.id, vk_pass:vk.pass, vk_token:vk.token,
-        proxy: accProxy,
-        city:city.name, latitude:city.lat, longitude:city.lon,
-        verified:false, premium:false, premium_expire:null, likes_done:0
-      };
-
-      // Upload photos
-      if (PHOTOS.length) {
-        const pc = Math.min(SETTINGS.photo_count||1, PHOTOS.length);
-        const extraPhotos = PHOTOS.slice(1).sort(()=>Math.random()-.5).slice(0, Math.max(0, pc - 1));
-        for (let pi = 0; pi < extraPhotos.length; pi++) {
-          logMsg(`  Extra photo ${pi+1}/${extraPhotos.length}...`);
-          const fd = new FormData();
-          fd.append('token', d.jwt);
-          fd.append('order', pi + 1);
-          fd.append('proxy', accProxy);
-          fd.append('photos', extraPhotos[pi].blob, extraPhotos[pi].name || 'photo.jpg');
-          try {
-            const pr = await fetch('/upload-photo', {method:'POST', body:fd});
-            const pd = await pr.json();
-            if (pd.error) logMsg(`  Фото: ${pd.error}`);
-            else if (pd.results) {
-              for (const r of pd.results) logMsg(`  Фото: ${r.ok?'OK':'ОШИБКА: '+(r.message||r.status)}`);
-            } else logMsg(`  Фото OK`);
-          } catch(e) { logMsg(`  Фото ошибка: ${e}`); }
-        }
-      }
-
-      // Verification video
-      if (VIDEOS.length) {
-        let verified = false;
-        for (let vi = 0; vi < Math.min(3, VIDEOS.length) && !verified; vi++) {
-          logMsg(`  Верификация (попытка ${vi+1})...`);
-          const vfd = new FormData();
-          vfd.append('token', d.jwt);
-          vfd.append('proxy', accProxy);
-          vfd.append('video', VIDEOS[vi].blob);
-          try {
-            const vr = await fetch('/api/verify-video', {method:'POST', body:vfd});
-            const vd = await vr.json();
-            if (vd.ok && vd.verified) { logMsg(`  ✓ Верифицирован`); accObj.verified = true; verified = true; }
-            else logMsg(`  Верификация: ${vd.error||'не пройдена'}`);
-          } catch(e) { logMsg(`  ${e}`); }
-        }
-      }
-
-      // Check status
-      try {
-        const sr = await fetch('/api/check-status', {method:'POST',
-          headers:{'Content-Type':'application/json'}, body:JSON.stringify({jwt:d.jwt, proxy:accProxy})});
-        const sd = await sr.json();
-        if (sd.ok) { accObj.verified=sd.verified; accObj.premium=sd.premium; accObj.premium_expire=sd.premium_expire; }
-      } catch(e) {}
-
-      if (!p.accounts) p.accounts = [];
-      p.accounts.push(accObj);
-      savePresetsServer(()=>renderPresetDetail());
-      logMsg(`  ✓ Добавлен`);
-    } catch(e) { logMsg(`  ОШИБКА: ${e}`); }
-  }
-  // Final save & refresh
-  savePresetsServer(()=>{renderPresets(); renderPresetDetail(); updateDash();});
-  logMsg('=== Регистрация завершена ===');
-}
-
-function pickWeightedCities(cities, count) {
-  if (!cities.length) return [];
-  const result = [];
-  const total = cities.reduce((s,c)=>s+c.population,0);
-  for (let i = 0; i < count; i++) {
-    let r = Math.random() * total;
-    for (const c of cities) { r -= c.population; if (r <= 0) { result.push(c); break; } }
-    if (result.length <= i) result.push(cities[Math.floor(Math.random()*cities.length)]);
-  }
-  return result;
-}
-
-/* ===================== AUTO-LIKE ===================== */
-async function autoLikePreset(presetName) {
-  const p = PRESETS[presetName];
-  if (!p || !(p.accounts||[]).length) { alert('Нет аккаунтов'); return; }
-  showLog();
-  logMsg(`=== Автолайк: ${presetName} (${p.accounts.length} акк.) ===`);
-
-  for (let i = 0; i < p.accounts.length; i++) {
-    const acc = p.accounts[i];
-    if (!acc.jwt) { logMsg(`[${i+1}] ${acc.city}: нет JWT`); continue; }
-    logMsg(`[${i+1}] ${acc.city}...`);
-    try {
-      const resp = await fetch('/api/auto-like', {method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({token:acc.jwt, max_rounds:50, proxy:acc.proxy||''})});
-      const data = await resp.json();
-      if (data.ok) {
-        acc.likes_done = (acc.likes_done||0) + (data.liked||0);
-        logMsg(`  ❤ ${data.liked} лайков (${data.stopped_reason||'done'})`);
-      } else { logMsg(`  Ошибка: ${data.error}`); }
-    } catch(e) { logMsg(`  ${e}`); }
-  }
-  savePresetsServer(()=>{renderPresetDetail();updateDash();});
-  logMsg('=== Автолайк завершён ===');
-}
-
-/* ===================== STATUS CHECK ===================== */
-async function checkStatusPreset(presetName) {
-  const p = PRESETS[presetName];
-  if (!p || !(p.accounts||[]).length) return;
-  showLog();
-  logMsg(`=== Проверка: ${presetName} ===`);
-  for (const acc of p.accounts) {
-    if (!acc.jwt) continue;
-    try {
-      const resp = await fetch('/api/check-status', {method:'POST',
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify({jwt:acc.jwt, proxy:acc.proxy||''})});
-      const d = await resp.json();
-      if (d.ok) {
-        acc.verified=d.verified; acc.premium=d.premium; acc.premium_expire=d.premium_expire;
-        logMsg(`${acc.city}: ${d.verified?'✓':'⚠️'} ${d.premium?'💎 до '+d.premium_expire:''}`);
-      }
-    } catch(e){}
-  }
-  savePresetsServer(()=>{renderPresetDetail();updateDash();});
-  logMsg('=== Готово ===');
-}
-
-/* ===================== RECOVER ===================== */
-async function recoverPreset(presetName) {
-  const p = PRESETS[presetName];
-  if (!p) return;
-  const count = p.count || 5;
-  const existing = (p.accounts||[]).length;
-  const need = count - existing;
-  if (need <= 0) { logMsg('У пресета уже достаточно аккаунтов'); return; }
-
-  const freeVk = getFreeVk(need);
-  if (!freeVk.length) { alert('Нет свободных VK аккаунтов'); return; }
-
-  showLog();
-  logMsg(`=== Восстановление "${presetName}": ${freeVk.length} аккаунтов ===`);
-
-  for (let i = 0; i < freeVk.length; i++) {
-    const vk = freeVk[i];
-    const proxy = getNextProxy();
-    logMsg(`[${i+1}/${freeVk.length}] VK ${vk.id} — proxy ${proxy||'нет'}...`);
-    try {
-      const resp = await fetch('/api/recover-account', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({vk_token: vk.token, vk_id: vk.id, vk_pass: vk.pass, proxy: proxy})
-      });
-      const d = await resp.json();
-      if (!d.ok) { logMsg(`  ОШИБКА: ${d.error}`); continue; }
-
-      // Find closest city name
-      let cityName = d.city_name || '';
-      if (!cityName && d.latitude && CITIES.length) {
-        let best = null, bestDist = Infinity;
-        for (const c of CITIES) {
-          const dist = Math.hypot(c.lat - d.latitude, c.lon - d.longitude);
-          if (dist < bestDist) { bestDist = dist; best = c; }
-        }
-        if (best) cityName = best.name;
-      }
-
-      const accProxy = d.proxy || proxy;
-      const accObj = {
-        jwt: d.jwt, user_id: d.user_id, name: d.name||'',
-        vk_id: vk.id, vk_pass: vk.pass, vk_token: vk.token,
-        proxy: accProxy,
-        city: cityName, latitude: d.latitude, longitude: d.longitude,
-        verified: d.verified, premium: d.premium,
-        premium_expire: d.premium_expire, likes_done: 0
-      };
-
-      if (!p.accounts) p.accounts = [];
-      p.accounts.push(accObj);
-      savePresetsServer(()=>renderPresetDetail());
-      const status = [d.verified?'✓':'⚠️', d.premium?'💎':''].filter(Boolean).join(' ');
-      logMsg(`  Восстановлен: ${d.name||'?'} (${cityName||'?'}) ${status}${d.raw_location?' [loc:'+d.raw_location+']':''}`);
-    } catch(e) { logMsg(`  ОШИБКА: ${e}`); }
-  }
-  logMsg('=== Восстановление завершено ===');
-}
-
-/* ===================== ACCOUNTS TAB ===================== */
-function renderAccounts(skipRebuild) {
-  if (!skipRebuild) rebuildAll();
-  const search = (document.getElementById('accSearch')?.value||'').toLowerCase();
-  const sf = document.getElementById('accFilterStatus')?.value||'';
-  let list = ALL_ACCOUNTS;
-  if (search) list = list.filter(a =>
-    (a.city||'').toLowerCase().includes(search) || (a.name||'').toLowerCase().includes(search) ||
-    (a.preset||'').toLowerCase().includes(search) || (a.vk_id||'').toLowerCase().includes(search));
-  if (sf==='verified') list = list.filter(a=>a.verified);
-  if (sf==='unverified') list = list.filter(a=>!a.verified);
-  if (sf==='premium') list = list.filter(a=>a.premium);
-
-  const box = document.getElementById('accountsList');
-  if (!list.length) { box.innerHTML='<div class="text-sm text-muted">Нет аккаунтов</div>'; box._data=[]; return; }
-  box._data = list;
-
-  // Group by preset
-  const groups = {};
-  for (const a of list) {
-    const p = a.preset || '—';
-    if (!groups[p]) groups[p] = [];
-    groups[p].push(a);
-  }
-
-  let html = '';
-  let globalIdx = 0;
-  for (const [presetName, accs] of Object.entries(groups)) {
-    const pv = accs.filter(a=>a.verified).length;
-    const pp = accs.filter(a=>a.premium).length;
-    html += `<div style="margin-top:16px;margin-bottom:8px;padding:6px 12px;background:var(--bg3);border-radius:var(--radius);border-left:3px solid var(--accent)">
-      <span style="font-weight:600;color:var(--accent)">${esc(presetName)}</span>
-      <span class="text-sm text-muted" style="margin-left:10px">${accs.length} акк. | ✓${pv} | 💎${pp}</span>
-    </div>`;
-    for (const a of accs) {
-      const idx = globalIdx++;
-      const vb = a.verified ? '<span class="badge ok">✓</span>' : '<span class="badge warn">⚠️</span>';
-      const pb = a.premium ? '<span class="badge info">💎</span>' : '';
-      html += `<div class="acc-btn" onclick="showAccDetail(${idx})" style="display:flex;align-items:center;gap:8px;padding:10px 14px;margin:4px 0;border:1px solid var(--fg3);border-radius:var(--radius);cursor:pointer;background:var(--bg2);transition:.15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--fg3)'">
-        <span style="font-weight:600;min-width:120px">${esc(a.city||'?')}</span>
-        <span class="text-sm text-muted">${esc(a.name||'')}</span>
-        ${a.vk_id?'<span class="text-sm text-muted">VK:'+esc(a.vk_id)+'</span>':''}
-        ${vb}${pb}
-        <span class="text-sm text-muted grow text-right">❤ ${a.likes_done||0}</span>
-      </div>`;
-    }
-  }
-  box.innerHTML = html;
-}
-
-function showAccDetail(idx) {
-  const list = document.getElementById('accountsList')._data;
-  if (!list?.[idx]) return;
-  const a = list[idx];
-  const el = document.getElementById('accountDetail');
-  el.classList.remove('hidden');
-  el.innerHTML = `<fieldset><legend>${esc(a.city)} — ${esc(a.name||'?')}</legend>
-    <div class="row">
-      <div><label>JWT</label><textarea readonly style="font-size:11px;min-height:60px">${esc(a.jwt||'')}</textarea>
-        <button class="small mt" onclick="navigator.clipboard.writeText(\`${esc(a.jwt||'')}\`)">Копировать</button></div>
-    </div>
-    <div class="row mt">
-      <div><label>VK ID</label><input readonly value="${esc(a.vk_id||'')}"></div>
-      <div><label>VK пароль</label><input readonly value="${esc(a.vk_pass||'')}"></div>
-      <div><label>VK токен</label><input readonly value="${esc(a.vk_token||'')}"></div>
-    </div>
-    <div class="row mt">
-      <div><label>User ID</label><input readonly value="${esc(a.user_id||'')}"></div>
-      <div><label>Пресет</label><input readonly value="${esc(a.preset||'')}"></div>
-      <div><label>Верификация</label><input readonly value="${a.verified?'Да':'Нет'}"></div>
-      <div><label>Премиум</label><input readonly value="${a.premium?'До '+(a.premium_expire||'?'):'Нет'}"></div>
-      <div><label>Лайков</label><input readonly value="${a.likes_done||0}"></div>
-    </div>
-  </fieldset>`;
-}
-
-/* ===================== LOG ===================== */
-function showLog() { document.getElementById('presetLog').classList.remove('hidden'); }
-function logMsg(msg) {
-  const el = document.getElementById('presetLog');
-  el.classList.remove('hidden');
-  el.textContent += (el.textContent?'\n':'')+msg;
-  el.scrollTop = el.scrollHeight;
-}
-
-/* ===================== UTILS ===================== */
-function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-
-function exportData() {
-  const blob = new Blob([JSON.stringify({presets:PRESETS, settings:SETTINGS}, null, 2)], {type:'application/json'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'twinby-backup-' + new Date().toISOString().slice(0,10) + '.json';
-  a.click();
-}
-
-function importData(input) {
-  const f = input.files[0];
-  if (!f) return;
-  const reader = new FileReader();
-  reader.onload = async e => {
-    try {
-      const d = JSON.parse(e.target.result);
-      if (d.presets) {
-        // Merge: existing accounts stay, imported ones added
-        for (const [name, p] of Object.entries(d.presets)) {
-          if (!PRESETS[name]) PRESETS[name] = p;
-          else {
-            const existing = new Set((PRESETS[name].accounts||[]).map(a=>a.user_id));
-            for (const a of (p.accounts||[])) {
-              if (!existing.has(a.user_id)) { PRESETS[name].accounts.push(a); existing.add(a.user_id); }
-            }
-          }
-        }
-        savePresetsServer(()=>{ renderPresets(); if(OPEN_PRESET) renderPresetDetail(); });
-        logMsg('Импорт: пресеты загружены');
-      }
-      if (d.settings) {
-        SETTINGS = {...SETTINGS, ...d.settings};
-        fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(SETTINGS)});
-        applySettings();
-      }
-      alert('Импорт завершён');
-    } catch(err) { alert('Ошибка: '+err); }
-  };
-  reader.readAsText(f);
-  input.value = '';
-}
-
-async function testRucaptcha() {
-  const key = document.getElementById('sRucaptchaKey').value.trim();
-  const el = document.getElementById('rucaptchaStatus');
-  if (!key) { el.textContent = 'Введите API ключ'; return; }
-  el.textContent = 'Проверяю...';
-  try {
-    const resp = await fetch('/api/rucaptcha-balance', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({key})});
-    const d = await resp.json();
-    if (d.ok) el.textContent = `✓ Баланс: ${d.balance} руб.`;
-    else el.textContent = `✗ Ошибка: ${d.error}`;
-  } catch(e) { el.textContent = 'Ошибка запроса: ' + e; }
-}
-
-function initReligionSelect() {
-  const sel = document.getElementById('sReligion');
-  for (const [id,name] of RELIGIONS) {
-    const o = document.createElement('option');
-    o.value = id; o.textContent = name; sel.appendChild(o);
-  }
-}
-
-/* ===================== INIT ===================== */
-document.addEventListener('DOMContentLoaded', () => {
-  initReligionSelect();
-  loadSettings();
-  loadPresets();
-  loadCities();
-});
-</script>
+    document.querySelectorAll('.nav [data-view], [data-go]').forEach(button=>button.addEventListener('click',()=>showView(button.dataset.view||button.dataset.go)));
+    document.getElementById('profileForm').addEventListener('submit',event=>{
+      event.preventDefault();
+      state.name=document.getElementById('nameInput').value.trim()||'Тестовый профиль';
+      state.city=document.getElementById('cityInput').value.trim();
+      state.about=document.getElementById('aboutInput').value.trim();
+      saveState();render();
+      document.getElementById('profileStatus').textContent='Сохранено локально в этом браузере.';
+      notify('Демо-профиль сохранён на этом устройстве.');
+    });
+    document.getElementById('resetProfile').addEventListener('click',()=>{
+      state={...defaults,compact:state.compact};saveState();render();
+      document.getElementById('profileStatus').textContent='Демо-профиль сброшен.';
+      notify('Демо-профиль сброшен.');
+    });
+    document.getElementById('compactToggle').addEventListener('change',event=>{
+      state.compact=event.target.checked;saveState();render();
+      document.getElementById('settingsStatus').textContent=state.compact?'Компактный режим включён.':'Компактный режим выключен.';
+    });
+    document.getElementById('clearData').addEventListener('click',()=>{
+      localStorage.removeItem(STORAGE_KEY);state={...defaults};render();
+      document.getElementById('settingsStatus').textContent='Локальные данные удалены.';
+      notify('Демо-данные удалены из этого браузера.');
+    });
+    render();
+  </script>
 </body>
 </html>
+
+
