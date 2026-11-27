@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import shutil
 import os
 import io
 import json
@@ -31,13 +32,42 @@ from curl_cffi import CurlHttpVersion
 import httpx
 
 # This copy lives one directory below the shared project helpers.
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+APP_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = APP_DIR.parent
+DATA_DIR = Path(os.environ.get("TWINBY_DATA_DIR") or APP_DIR).expanduser().resolve()
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import twinby_onboard as tw
 from cities import RUSSIAN_CITIES, get_cities_json
 
+def _initialize_data_dir() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if DATA_DIR == APP_DIR:
+        return
+    for name in (
+        "accounts.json",
+        "presets.json",
+        "onboarding_settings.json",
+        "vk_pool.json",
+        "proxy_pool.json",
+        "seen_users.json",
+        "messaged_chats.json",
+    ):
+        source, destination = APP_DIR / name, DATA_DIR / name
+        if destination.exists() or not source.is_file():
+            continue
+        with tempfile.TemporaryDirectory(dir=DATA_DIR) as directory:
+            staged = Path(directory) / name
+            shutil.copyfile(source, staged)
+            staged.chmod(0o600)
+            try:
+                os.link(staged, destination)
+            except FileExistsError:
+                pass  # Another process populated this file during startup.
+
+
+_initialize_data_dir()
 app = Flask(__name__)
 
 # ---- конфиг (источник: HAR 2026-11-20) -------------------------------------------------------
@@ -738,14 +768,14 @@ CHAT_MESSAGES_PATH_TMPL = "/api/chats/chat/{chat_id}/message/"  # GET ?page=&siz
 EMPTY_CHATS_PATH = "/api/chats/chat/empty/v2/"   # GET ?size=&page= → {count,newEmptyChats,results:[{id,createdAt,interlocutor,compatibility,distance,isNew}]}
 
 # Хранилище аккаунтов — файл, переживает рестарт. Формат: {label: {vk_token, jwt, user_id, name}}
-ACCOUNTS_FILE = Path(__file__).parent / "accounts.json"
-SETTINGS_FILE = Path(__file__).parent / "onboarding_settings.json"
+ACCOUNTS_FILE = DATA_DIR / "accounts.json"
+SETTINGS_FILE = DATA_DIR / "onboarding_settings.json"
 # Пул сырых VK access token'ов, вставленных в Настройках списком. Формат: список
 # {"token": str, "used": bool, "user_id": str, "name": str, "error": str|None}.
 # Регистрация (вкладка Пресеты) берёт отсюда неиспользованные токены и превращает их
 # в Twinby-аккаунты (JWT) через тот же /api/auth/v2/oauth/by-token, что уже подтверждён
 # рабочим в этом инструменте (AUTH_VK_PATH ниже).
-VK_POOL_FILE = Path(__file__).parent / "vk_pool.json"
+VK_POOL_FILE = DATA_DIR / "vk_pool.json"
 
 SETTING_TEXT_FIELDS = ("name", "birthday", "gender", "target_id", "interview_id", "about", "height",
                       "city_id", "city_name", "religion_id", "education", "children", "alcohol", "smoking")
@@ -757,8 +787,22 @@ def _load_onboarding_settings() -> dict:
     except (OSError, ValueError):
         return {}
 
+def _write_json(path: Path, data: dict | list) -> None:
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as file:
+            temp = Path(file.name)
+            file.write(json.dumps(data, ensure_ascii=False, indent=2))
+        os.replace(temp, path)
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+
+
 def _save_onboarding_settings(data: dict) -> None:
-    SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(SETTINGS_FILE, data)
 
 def _load_accounts() -> dict:
     if ACCOUNTS_FILE.exists():
@@ -769,9 +813,24 @@ def _load_accounts() -> dict:
     return {}
 
 def _save_accounts(data: dict):
-    ACCOUNTS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    with ACCOUNTS_LOCK:
+        snapshot = {label: acc.copy() for label, acc in data.copy().items()}
+        _write_json(ACCOUNTS_FILE, snapshot)
 
 ACCOUNTS: dict[str, dict] = _load_accounts()
+ACCOUNTS_LOCK = threading.RLock()
+ACCOUNT_STAT_FIELDS = ("likes_done", "dislikes_done", "messages_sent")
+
+
+def _increment_account_stat(label: str, acc: dict, field: str, tee) -> None:
+    try:
+        with ACCOUNTS_LOCK:
+            if ACCOUNTS.get(label) is not acc:
+                return
+            acc[field] = (acc.get(field) or 0) + 1
+            _save_accounts(ACCOUNTS)
+    except OSError as exc:
+        tee(f"Не удалось сохранить статистику аккаунта: {exc}")
 
 
 def _load_vk_pool() -> list[dict]:
@@ -785,7 +844,7 @@ def _load_vk_pool() -> list[dict]:
 
 
 def _save_vk_pool(data: list[dict]) -> None:
-    VK_POOL_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(VK_POOL_FILE, data)
 
 
 VK_POOL: list[dict] = _load_vk_pool()
@@ -815,7 +874,7 @@ def _parse_vk_pool_line(line: str) -> dict:
 # ---- Прокси-пул: ip:port:user:pass построчно, round-robin, прокси закрепляется
 # за аккаунтом НАВСЕГДА (сохраняется в accounts.json и переиспользуется для
 # всех дальнейших действий этого аккаунта — свайпы/лайки/профиль). ------------
-PROXY_POOL_FILE = Path(__file__).parent / "proxy_pool.json"
+PROXY_POOL_FILE = DATA_DIR / "proxy_pool.json"
 
 
 def _load_proxy_pool() -> list[str]:
@@ -829,7 +888,7 @@ def _load_proxy_pool() -> list[str]:
 
 
 def _save_proxy_pool(data: list[str]) -> None:
-    PROXY_POOL_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(PROXY_POOL_FILE, data)
 
 
 PROXY_POOL: list[str] = _load_proxy_pool()
@@ -879,7 +938,7 @@ def _proxy_for_jwt(jwt_token: str) -> str:
 # user id) — если кандидат уже был лайкнут/дизлайкнут с ЛЮБОЙ из наших
 # анкет когда-либо, повторно не лайкаем, а сразу дизлайкаем. Общий файл,
 # не привязан к конкретному аккаунту/пресету. --------------------------------
-SEEN_USERS_FILE = Path(__file__).parent / "seen_users.json"
+SEEN_USERS_FILE = DATA_DIR / "seen_users.json"
 _seen_users_lock = threading.Lock()
 
 
@@ -894,7 +953,7 @@ def _load_seen_users() -> dict:
 
 
 def _save_seen_users(data: dict) -> None:
-    SEEN_USERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(SEEN_USERS_FILE, data)
 
 
 SEEN_USERS: dict = _load_seen_users()
@@ -915,7 +974,7 @@ def _was_seen(uid: str) -> bool:
 # ---- Глобальная память "уже написали первыми в этот чат" (по Twinby chat
 # id) — для Рассылки, чтобы при повторном опросе списка чатов не слать
 # повторное сообщение в тот же чат. Общий файл, не привязан к пресету. -------
-MESSAGED_CHATS_FILE = Path(__file__).parent / "messaged_chats.json"
+MESSAGED_CHATS_FILE = DATA_DIR / "messaged_chats.json"
 _messaged_chats_lock = threading.Lock()
 
 
@@ -930,10 +989,24 @@ def _load_messaged_chats() -> dict:
 
 
 def _save_messaged_chats(data: dict) -> None:
-    MESSAGED_CHATS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(MESSAGED_CHATS_FILE, data)
 
 
 MESSAGED_CHATS: dict = _load_messaged_chats()
+
+# Старые файлы хранят и отправки, и чаты, в которых ответ уже был.
+_existing_reply_notes = {
+    "(уже отвечали — lastMessage наш)",
+    "(уже отвечали — найдено в истории)",
+}
+_legacy_message_totals = {}
+for _entry in MESSAGED_CHATS.values():
+    if (isinstance(_entry, dict) and _entry.get("by") and isinstance(_entry.get("text"), str)
+            and _entry["text"] not in _existing_reply_notes):
+        _label = _entry["by"]
+        _legacy_message_totals[_label] = _legacy_message_totals.get(_label, 0) + 1
+for _label, _acc in ACCOUNTS.items():
+    _acc.setdefault("messages_sent", _legacy_message_totals.get(_label, 0))
 
 
 def _mark_messaged(chat_id: str, by: str, text: str) -> None:
@@ -1617,15 +1690,52 @@ function accountStatusText(enabled) {
   return enabled ? 'Да' : 'Нет';
 }
 
+let latestAccountStats = {};
+let accountStatsLoading = false;
+
+function renderLiveAccountStats() {
+  for (const stat of document.querySelectorAll('[data-account-stat]')) {
+    const label = stat.closest('[data-account-label]')?.dataset.accountLabel;
+    if (label === undefined || !Object.hasOwn(latestAccountStats, label)) continue;
+    const value = String(latestAccountStats[label][stat.dataset.accountStat] ?? 0);
+    if (stat.textContent !== value) stat.textContent = value;
+  }
+}
+
+async function refreshAccountStats() {
+  if (accountStatsLoading || document.hidden ||
+      !document.querySelector('[data-account-label] [data-account-stat]')) return;
+  accountStatsLoading = true;
+  try {
+    const response = await fetch('/api/accounts/stats');
+    if (response.ok) {
+      latestAccountStats = await response.json();
+      renderLiveAccountStats();
+    }
+  } catch {
+    // Keep the last counts visible until the next successful poll.
+  } finally {
+    accountStatsLoading = false;
+  }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  refreshAccountStats();
+  setInterval(refreshAccountStats, 1000);
+});
+document.addEventListener('visibilitychange', refreshAccountStats);
+
 function openAccountModal(label){
   fetch('/api/accounts').then(r=>r.json()).then(all=>{
     const a=all[label];
     if(!a){alert('Аккаунт не найден');return;}
     const box=document.getElementById('acctModalBox');
+    box.dataset.accountLabel=label;
     box.innerHTML=''
       +'<button type="button" class="modal-close" id="acctModalCloseBtn" aria-label="Закрыть">&times;</button>'
       +'<h3 id="acctModalTitle">'+esc_(a.name||a.preset||'Аккаунт')+'</h3>'
-      +'<div class="mrow"><b>Лайков:</b> '+(a.likes_done||0)+' &nbsp; <b>Дизлайков:</b> '+(a.dislikes_done||0)+'</div>'
+      +'<div class="mrow"><b>Лайков:</b> <span data-account-stat="likes_done">'+esc_(a.likes_done||'0')+'</span>'
+      +' &nbsp; <b>Дизлайков:</b> <span data-account-stat="dislikes_done">'+esc_(a.dislikes_done||'0')+'</span>'
+      +' &nbsp; <b>Отправлено сообщений:</b> <span data-account-stat="messages_sent">'+esc_(a.messages_sent||'0')+'</span></div>'
       +'<div class="mrow"><b>Пресет:</b> '+esc_(a.preset||'—')+' &nbsp; <b>Город:</b> '+esc_(a.city||'—')+'</div>'
       +'<div class="mrow"><b>Онбординг:</b> '+(a.onboarded?'Пройден':'Не пройден')+(a.onboard_error?' · '+esc_(a.onboard_error):'')+' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
       +'<div class="mrow"><label class="l" style="margin-top:12px">VK данные (id:pass:token)</label>'
@@ -1643,6 +1753,7 @@ function openAccountModal(label){
     }
     accountModalTrigger=document.activeElement;
     document.getElementById('acctModal').style.display='flex';
+    refreshAccountStats();
     closeButton.focus();
   });
 }
@@ -1650,6 +1761,7 @@ function openAccountModal(label){
 let accountModalTrigger=null;
 function closeAccountModal(){
   document.getElementById('acctModal').style.display='none';
+  delete document.getElementById('acctModalBox').dataset.accountLabel;
   accountModalTrigger?.focus();
   accountModalTrigger=null;
 }
@@ -2178,8 +2290,9 @@ PAGE_ACCOUNTS = """
   <div class="info">
     <button class="account-title" type="button" aria-haspopup="dialog">{{ acc.name or acc.preset or 'Аккаунт' }}</button>
     <div class="account-summary">
-      <span>Лайки <strong>{{ acc.likes_done or 0 }}</strong></span>
-      <span>Дизлайки <strong>{{ acc.dislikes_done or 0 }}</strong></span>
+      <span>Лайки <strong data-account-stat="likes_done">{{ acc.likes_done or 0 }}</strong></span>
+      <span>Дизлайки <strong data-account-stat="dislikes_done">{{ acc.dislikes_done or 0 }}</strong></span>
+      <span>Отправлено сообщений <strong data-account-stat="messages_sent">{{ acc.messages_sent or 0 }}</strong></span>
       {{ status('verified', 'Верификация', acc.verified) }}
       {{ status('premium', 'Премиум', acc.premium) }}
     </div>
@@ -3086,7 +3199,7 @@ def my_photos():
 
 
 # ---- API: пресеты (server-side JSON storage) ----
-PRESETS_FILE = Path(__file__).parent / "presets.json"
+PRESETS_FILE = DATA_DIR / "presets.json"
 
 def _load_presets():
     if PRESETS_FILE.exists():
@@ -3097,7 +3210,7 @@ def _load_presets():
     return {}
 
 def _save_presets(data):
-    PRESETS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(PRESETS_FILE, data)
 
 
 def _preset_delay(preset_cfg: dict, min_key: str, max_key: str,
@@ -3329,9 +3442,17 @@ function loadPresets(){
   });
 }
 
+let pendingPresetSave = Promise.resolve();
 function savePresets(cb){
-  fetch('/api/presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(PRESETS)})
-  .then(r=>r.json()).then(d=>{if(cb)cb();});
+  const body = JSON.stringify(PRESETS);
+  pendingPresetSave = pendingPresetSave.catch(()=>{}).then(async () => {
+    const response = await fetch('/api/presets', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body
+    });
+    if (!response.ok || !(await response.json()).ok) throw new Error('Не удалось сохранить пресеты');
+  });
+  pendingPresetSave.then(() => { if (cb) cb(); }, error => logMsg(error.message));
+  return pendingPresetSave;
 }
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
@@ -3430,8 +3551,9 @@ function renderPresetDetail(){
       +'<div class="info"><button class="account-title" type="button" aria-haspopup="dialog">'
       +esc(a.name||a.preset||'Аккаунт')+'</button>'
       +'<div class="account-summary">'
-      +'<span>Лайки <strong>'+esc(a.likes_done||'0')+'</strong></span>'
-      +'<span>Дизлайки <strong>'+esc(a.dislikes_done||'0')+'</strong></span>'
+      +'<span>Лайки <strong data-account-stat="likes_done">'+esc(a.likes_done||'0')+'</strong></span>'
+      +'<span>Дизлайки <strong data-account-stat="dislikes_done">'+esc(a.dislikes_done||'0')+'</strong></span>'
+      +'<span>Отправлено сообщений <strong data-account-stat="messages_sent">'+esc(a.messages_sent||'0')+'</strong></span>'
       +renderAccountStatus('verified', 'Верификация', a.verified)
       +renderAccountStatus('premium', 'Премиум', a.premium)
       +'</div>'+(jwt?'<span class="jwt">JWT: '+esc(preview)+'</span>':'')+'</div>'
@@ -3442,15 +3564,16 @@ function renderPresetDetail(){
 
   html+='</fieldset>';
   d.innerHTML=html;
-  refreshLikeButtonState();
-  refreshBroadcastButtonState();
+  renderLiveAccountStats();
+  refreshAccountStats();
+  watchPresetJobs();
 }
 
 function saveBroadcastMessages(){
   if(!OPEN_PRESET)return;
   if(!PRESETS[OPEN_PRESET]) PRESETS[OPEN_PRESET]={};
   PRESETS[OPEN_PRESET].messages=document.getElementById('broadcastMessages').value;
-  savePresets();
+  return savePresets();
 }
 
 function saveDelaySetting(key,inputId){
@@ -3509,133 +3632,99 @@ function quickAddAccounts(){
 }
 
 function logMsg(msg){
-  const el=document.getElementById('presetLog');
+  appendPresetLog([msg]);
+}
+
+function appendPresetLog(lines){
+  if (!lines.length) return;
+  const el = document.getElementById('presetLog');
   el.style.cssText='padding:8px;background:var(--field);border-radius:6px;font-size:13px;white-space:pre-wrap;max-height:300px;overflow-y:auto';
-  el.innerText+=(el.innerText?'\n':'')+msg;
-  el.scrollTop=el.scrollHeight;
+  el.append((el.hasChildNodes() ? '\n' : '') + lines.join('\n'));
+  el.scrollTop = el.scrollHeight;
 }
 
-// --- Лайкать: параллельно по всем анкетам пресета, с поллингом статуса ---
-let LIKE_POLL_TIMER=null;
-let LIKE_POLL_PRESET=null;
-let LIKE_LOG_SHOWN=0;
+const presetJobLabels = {like: 'лайкает...', broadcast: 'рассылка работает...'};
+const presetJobStates = new Map();
+let presetJobMonitor = null;
 
-function startPresetLike(){
-  if(!OPEN_PRESET)return;
-  fetch('/api/preset-like/start',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({preset:OPEN_PRESET})})
-  .then(r=>r.json()).then(d=>{
-    if(!d.ok){alert(d.error||'Не удалось начать');return;}
-    LIKE_LOG_SHOWN=0;
-    logMsg('--- '+OPEN_PRESET+': запускаю лайканье по всем анкетам пресета ---');
-    startLikePolling(OPEN_PRESET);
-    refreshLikeButtonState();
-  });
-}
-
-function stopPresetLike(){
-  if(!OPEN_PRESET)return;
-  fetch('/api/preset-like/stop',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({preset:OPEN_PRESET})});
-}
-
-function startLikePolling(preset){
-  if(LIKE_POLL_TIMER) clearInterval(LIKE_POLL_TIMER);
-  LIKE_POLL_PRESET=preset;
-  LIKE_POLL_TIMER=setInterval(()=>pollPresetLike(preset),3000);
-  pollPresetLike(preset);
-}
-
-function pollPresetLike(preset){
-  fetch('/api/preset-like/status?preset='+encodeURIComponent(preset)).then(r=>r.json()).then(d=>{
-    (d.log||[]).slice(LIKE_LOG_SHOWN).forEach(m=>logMsg(m));
-    LIKE_LOG_SHOWN=(d.log||[]).length;
-    const line=document.getElementById('likeStatusLine');
-    if(line) line.innerText=d.running?'лайкает...':'остановлено';
-    const likeBtn=document.getElementById('likeBtn');
-    const stopBtn=document.getElementById('stopLikeBtn');
-    if(likeBtn) likeBtn.style.display=d.running?'none':'';
-    if(stopBtn) stopBtn.style.display=d.running?'':'none';
-    if(!d.running && LIKE_POLL_TIMER){
-      clearInterval(LIKE_POLL_TIMER);LIKE_POLL_TIMER=null;
-      loadAccountsCache(()=>{renderPresets();renderPresetDetail();});
+function watchPresetJobs(){
+  if (presetJobMonitor?.preset !== OPEN_PRESET) {
+    if (!presetJobStates.has(OPEN_PRESET)) {
+      presetJobStates.set(OPEN_PRESET, {
+        like: {id:'', cursor:0, running:false},
+        broadcast: {id:'', cursor:0, running:false}
+      });
     }
-  });
+    presetJobMonitor = {preset:OPEN_PRESET, jobs:presetJobStates.get(OPEN_PRESET)};
+    for (const kind of Object.keys(presetJobLabels)) pollPresetJob(presetJobMonitor, kind);
+  }
+  for (const kind of Object.keys(presetJobLabels)) renderPresetJob(kind, presetJobMonitor.jobs[kind]);
 }
 
-function refreshLikeButtonState(){
-  if(!OPEN_PRESET)return;
-  fetch('/api/preset-like/status?preset='+encodeURIComponent(OPEN_PRESET)).then(r=>r.json()).then(d=>{
-    const likeBtn=document.getElementById('likeBtn');
-    const stopBtn=document.getElementById('stopLikeBtn');
-    const line=document.getElementById('likeStatusLine');
-    if(likeBtn) likeBtn.style.display=d.running?'none':'';
-    if(stopBtn) stopBtn.style.display=d.running?'':'none';
-    if(line) line.innerText=d.running?'лайкает...':'';
-    if(d.running){LIKE_LOG_SHOWN=0;startLikePolling(OPEN_PRESET);}
-  });
+function renderPresetJob(kind, state){
+  const stopId = 'stop' + kind[0].toUpperCase() + kind.slice(1) + 'Btn';
+  const line = document.getElementById(kind + 'StatusLine');
+  if (!line) return;
+  line.textContent = state.running ? presetJobLabels[kind] : 'остановлено';
+  document.getElementById(kind + 'Btn').style.display = state.running ? 'none' : '';
+  document.getElementById(stopId).style.display = state.running ? '' : 'none';
 }
 
-// --- Рассылка: при мэтче без ответа — случайное сообщение из списка, ---
-// непрерывный фоновый опрос (аналогично Лайкать, своя пара кнопок/поллинг) ---
-let BROADCAST_POLL_TIMER=null;
-let BROADCAST_POLL_PRESET=null;
-let BROADCAST_LOG_SHOWN=0;
-
-function startPresetBroadcast(){
-  if(!OPEN_PRESET)return;
-  saveBroadcastMessages();
-  fetch('/api/preset-broadcast/start',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({preset:OPEN_PRESET})})
-  .then(r=>r.json()).then(d=>{
-    if(!d.ok){alert(d.error||'Не удалось начать');return;}
-    BROADCAST_LOG_SHOWN=0;
-    logMsg('--- '+OPEN_PRESET+': запускаю рассылку по мэтчам без ответа ---');
-    startBroadcastPolling(OPEN_PRESET);
-    refreshBroadcastButtonState();
-  });
-}
-
-function stopPresetBroadcast(){
-  if(!OPEN_PRESET)return;
-  fetch('/api/preset-broadcast/stop',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({preset:OPEN_PRESET})});
-}
-
-function startBroadcastPolling(preset){
-  if(BROADCAST_POLL_TIMER) clearInterval(BROADCAST_POLL_TIMER);
-  BROADCAST_POLL_PRESET=preset;
-  BROADCAST_POLL_TIMER=setInterval(()=>pollPresetBroadcast(preset),3000);
-  pollPresetBroadcast(preset);
-}
-
-function pollPresetBroadcast(preset){
-  fetch('/api/preset-broadcast/status?preset='+encodeURIComponent(preset)).then(r=>r.json()).then(d=>{
-    (d.log||[]).slice(BROADCAST_LOG_SHOWN).forEach(m=>logMsg(m));
-    BROADCAST_LOG_SHOWN=(d.log||[]).length;
-    const line=document.getElementById('broadcastStatusLine');
-    if(line) line.innerText=d.running?'рассылка работает...':'остановлено';
-    const b=document.getElementById('broadcastBtn');
-    const s=document.getElementById('stopBroadcastBtn');
-    if(b) b.style.display=d.running?'none':'';
-    if(s) s.style.display=d.running?'':'none';
-    if(!d.running && BROADCAST_POLL_TIMER){
-      clearInterval(BROADCAST_POLL_TIMER);BROADCAST_POLL_TIMER=null;
+async function pollPresetJob(monitor, kind){
+  if (monitor !== presetJobMonitor || monitor.preset !== OPEN_PRESET) return;
+  const state = monitor.jobs[kind];
+  let delay = 1000;
+  try {
+    const query = new URLSearchParams({preset:monitor.preset, job_id:state.id, after:state.cursor});
+    const response = await fetch('/api/preset-' + kind + '/status?' + query, {cache:'no-store'});
+    if (!response.ok) throw new Error();
+    const data = await response.json();
+    if (monitor !== presetJobMonitor || monitor.preset !== OPEN_PRESET) return;
+    state.id = data.job_id;
+    state.cursor = data.next_cursor;
+    state.running = data.running || data.has_more;
+    appendPresetLog(data.log);
+    renderPresetJob(kind, state);
+    if (data.has_more) delay = 0;
+  } catch {
+    // Retry with the same cursor after a failed request.
+  } finally {
+    if (monitor === presetJobMonitor && monitor.preset === OPEN_PRESET) {
+      setTimeout(() => pollPresetJob(monitor, kind), delay);
     }
-  });
+  }
 }
 
-function refreshBroadcastButtonState(){
-  if(!OPEN_PRESET)return;
-  fetch('/api/preset-broadcast/status?preset='+encodeURIComponent(OPEN_PRESET)).then(r=>r.json()).then(d=>{
-    const b=document.getElementById('broadcastBtn');
-    const s=document.getElementById('stopBroadcastBtn');
-    const line=document.getElementById('broadcastStatusLine');
-    if(b) b.style.display=d.running?'none':'';
-    if(s) s.style.display=d.running?'':'none';
-    if(line) line.innerText=d.running?'рассылка работает...':'';
-    if(d.running){BROADCAST_LOG_SHOWN=0;startBroadcastPolling(OPEN_PRESET);}
-  });
+function startPresetLike(){ requestPresetJob('like', 'start'); }
+function stopPresetLike(){ requestPresetJob('like', 'stop'); }
+function startPresetBroadcast(){ requestPresetJob('broadcast', 'start'); }
+function stopPresetBroadcast(){ requestPresetJob('broadcast', 'stop'); }
+
+async function requestPresetJob(kind, action){
+  const preset = OPEN_PRESET;
+  if (!preset) return;
+  const button = document.activeElement;
+  if (button?.tagName === 'BUTTON') button.disabled = true;
+  try {
+    if (action === 'start') {
+      if (kind === 'broadcast') await saveBroadcastMessages();
+      else await pendingPresetSave;
+    }
+    const response = await fetch('/api/preset-' + kind + '/' + action, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({preset})
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Ошибка запроса');
+    if (action === 'start' && OPEN_PRESET === preset) {
+      const state = presetJobMonitor.jobs[kind];
+      state.running = true;
+      renderPresetJob(kind, state);
+    }
+  } catch (error) {
+    logMsg(error.message);
+  } finally {
+    if (button?.tagName === 'BUTTON') button.disabled = false;
+  }
 }
 
 document.addEventListener('DOMContentLoaded',()=>{loadPresets();loadVkPoolStats();});
@@ -3718,6 +3807,7 @@ def api_bulk_register():
             "premium": False,
             "likes_done": 0,
             "dislikes_done": 0,
+            "messages_sent": 0,
         }
         entry["used"] = True
         entry["user_id"] = r.get("user_id", "")
@@ -3812,6 +3902,7 @@ def api_accounts_quick_add():
             "premium": False,
             "likes_done": 0,
             "dislikes_done": 0,
+            "messages_sent": 0,
         }
         added += 1
         results.append({"ok": True, "label": label, "name": r.get("name", ""), "user_id": r.get("user_id", "")})
@@ -4018,6 +4109,18 @@ def api_accounts_list():
     return jsonify(ACCOUNTS)
 
 
+@app.route("/api/accounts/stats", methods=["GET"])
+def api_accounts_stats():
+    with ACCOUNTS_LOCK:
+        stats = {
+            label: {key: acc.get(key) or 0 for key in ACCOUNT_STAT_FIELDS}
+            for label, acc in ACCOUNTS.copy().items()
+        }
+    response = jsonify(stats)
+    response.cache_control.no_store = True
+    return response
+
+
 @app.route("/api/accounts", methods=["POST"])
 def api_accounts_add():
     """Добавить аккаунт через VK токен. JSON: {label, vk_token}"""
@@ -4094,6 +4197,36 @@ LIKE_COOLDOWN_SEC = 20 * 60
 
 LIKE_JOBS_LOCK = threading.Lock()
 LIKE_JOBS: dict[str, dict] = {}  # preset -> {"running","stop_event","log","accounts"}
+
+
+def _run_job(job: dict, lock, run, *args) -> None:
+    try:
+        run(*args)
+    except Exception as exc:
+        job["log"].append(f"Ошибка фоновой задачи: {exc}")
+    finally:
+        with lock:
+            job["running"] = False
+
+
+def _preset_job_status(jobs: dict, lock):
+    preset = request.args.get("preset", "").strip()
+    cursor = request.args.get("after", type=int)
+    job_id = request.args.get("job_id", "")
+    with lock:
+        job = jobs.get(preset)
+        if not job:
+            return jsonify(ok=True, running=False, log=[], accounts={},
+                           job_id="", next_cursor=0, has_more=False)
+        total = len(job["log"])
+        if cursor is None:
+            start = max(0, total - 300)
+        else:
+            start = min(total, max(0, cursor)) if job_id == job["id"] else 0
+        end = min(total, start + 300)
+        return jsonify(ok=True, running=job["running"], log=job["log"][start:end],
+                       accounts=job["accounts"], job_id=job["id"],
+                       next_cursor=end, has_more=end < total)
 
 
 def _is_limit_error(msg: str) -> bool:
@@ -4246,17 +4379,17 @@ def _like_loop_for_account(label: str, stop_event: "threading.Event", tee,
                 continue
             if action_type == 0:
                 liked += 1
-                _mark_seen(uid, "like", label)
+                _increment_account_stat(label, acc, "likes_done", tee)
                 tee(f"LIKE #{liked}: {u.get('name', '')}, {u.get('age', '')} (id={uid})")
+                _mark_seen(uid, "like", label)
             else:
                 disliked += 1
-                _mark_seen(uid, "dislike", label)
+                _increment_account_stat(label, acc, "dislikes_done", tee)
                 tee(f"DISLIKE (уже встречался раньше, не дублируем лайк): id={uid}")
+                _mark_seen(uid, "dislike", label)
             time.sleep(random.uniform(delay_min, delay_max))
         if stopped_reason:
             break
-    acc["likes_done"] = acc.get("likes_done", 0) + liked
-    acc["dislikes_done"] = acc.get("dislikes_done", 0) + disliked
     return {"liked": liked, "disliked": disliked, "rounds": rounds, "errors": errors,
             "stopped_reason": stopped_reason}
 
@@ -4265,14 +4398,13 @@ def _run_preset_like_job(preset: str) -> None:
     with LIKE_JOBS_LOCK:
         job = LIKE_JOBS[preset]
         stop_event = job["stop_event"]
-    all_preset = [(label, acc) for label, acc in ACCOUNTS.items() if acc.get("preset") == preset]
+    all_preset = [(label, acc) for label, acc in ACCOUNTS.copy().items() if acc.get("preset") == preset]
     dead = [label for label, acc in all_preset if acc.get("dead")]
     accs = [label for label, acc in all_preset if acc.get("jwt") and not acc.get("dead")]
     if dead:
         job["log"].append(f"Пропускаю {len(dead)} помеченных мёртвыми анкет(у): {', '.join(dead)}")
     if not accs:
         job["log"].append("Нет анкет с JWT в этом пресете.")
-        job["running"] = False
         return
     preset_cfg = _load_presets().get(preset) or {}
     delay_min, delay_max = _preset_delay(preset_cfg, "like_delay_min", "like_delay_max", 0.5, 1.5)
@@ -4280,7 +4412,11 @@ def _run_preset_like_job(preset: str) -> None:
 
     def worker(label):
         tee = lambda m: job["log"].append(f"[{label}] {m}")
-        res = _like_loop_for_account(label, stop_event, tee, delay_min=delay_min, delay_max=delay_max)
+        try:
+            res = _like_loop_for_account(label, stop_event, tee, delay_min=delay_min, delay_max=delay_max)
+        except Exception as exc:
+            tee(f"Ошибка фоновой задачи: {exc}")
+            return
         with LIKE_JOBS_LOCK:
             job["accounts"][label] = res
         tee(f"готово: лайков {res['liked']}, дизлайков {res['disliked']}, стоп: {res.get('stopped_reason') or '-'}")
@@ -4292,9 +4428,7 @@ def _run_preset_like_job(preset: str) -> None:
         t.join()
 
     _save_accounts(ACCOUNTS)
-    _save_seen_users(SEEN_USERS)
     job["log"].append("Все анкеты пресета завершили (или были остановлены).")
-    job["running"] = False
 
 
 @app.route("/api/preset-set-gender", methods=["POST"])
@@ -4342,8 +4476,11 @@ def api_preset_like_start():
         existing = LIKE_JOBS.get(preset)
         if existing and existing.get("running"):
             return jsonify({"ok": False, "error": "Этот пресет уже лайкает."})
-        LIKE_JOBS[preset] = {"running": True, "stop_event": threading.Event(), "log": [], "accounts": {}}
-    th = threading.Thread(target=_run_preset_like_job, args=(preset,), daemon=True)
+        job = {"id": uuid.uuid4().hex, "running": True, "stop_event": threading.Event(),
+               "log": [], "accounts": {}}
+        LIKE_JOBS[preset] = job
+    th = threading.Thread(target=_run_job, args=(job, LIKE_JOBS_LOCK, _run_preset_like_job, preset),
+                          daemon=True)
     th.start()
     return jsonify({"ok": True})
 
@@ -4361,12 +4498,7 @@ def api_preset_like_stop():
 
 @app.route("/api/preset-like/status", methods=["GET"])
 def api_preset_like_status():
-    preset = request.args.get("preset", "").strip()
-    with LIKE_JOBS_LOCK:
-        job = LIKE_JOBS.get(preset)
-        if not job:
-            return jsonify({"ok": True, "running": False, "log": [], "accounts": {}})
-        return jsonify({"ok": True, "running": job["running"], "log": job["log"][-300:], "accounts": job["accounts"]})
+    return _preset_job_status(LIKE_JOBS, LIKE_JOBS_LOCK)
 
 
 # ---- Рассылка: при мэтче без нашего ответа — отправить одно случайное -----
@@ -4567,9 +4699,10 @@ def _broadcast_loop_for_account(label: str, messages: list[str], stop_event: "th
                     break
                 continue
             sent += 1
-            _mark_messaged(chat_id, label, text)
+            _increment_account_stat(label, acc, "messages_sent", tee)
             who = (chat.get("interlocutor") or {}).get("name", "?")
             tee(f"MSG #{sent} -> {who}: {text!r}")
+            _mark_messaged(chat_id, label, text)
             time.sleep(random.uniform(delay_min, delay_max))
         if stopped_reason:
             break
@@ -4584,14 +4717,13 @@ def _run_preset_broadcast_job(preset: str, messages: list[str]) -> None:
     with BROADCAST_JOBS_LOCK:
         job = BROADCAST_JOBS[preset]
         stop_event = job["stop_event"]
-    all_preset = [(label, acc) for label, acc in ACCOUNTS.items() if acc.get("preset") == preset]
+    all_preset = [(label, acc) for label, acc in ACCOUNTS.copy().items() if acc.get("preset") == preset]
     dead = [label for label, acc in all_preset if acc.get("dead")]
     accs = [label for label, acc in all_preset if acc.get("jwt") and not acc.get("dead")]
     if dead:
         job["log"].append(f"Пропускаю {len(dead)} помеченных мёртвыми анкет(у): {', '.join(dead)}")
     if not accs:
         job["log"].append("Нет анкет с JWT в этом пресете.")
-        job["running"] = False
         return
     preset_cfg = _load_presets().get(preset) or {}
     delay_min, delay_max = _preset_delay(preset_cfg, "msg_delay_min", "msg_delay_max", 0.5, 1.5)
@@ -4599,7 +4731,11 @@ def _run_preset_broadcast_job(preset: str, messages: list[str]) -> None:
 
     def worker(label):
         tee = lambda m: job["log"].append(f"[{label}] {m}")
-        res = _broadcast_loop_for_account(label, messages, stop_event, tee, delay_min=delay_min, delay_max=delay_max)
+        try:
+            res = _broadcast_loop_for_account(label, messages, stop_event, tee, delay_min=delay_min, delay_max=delay_max)
+        except Exception as exc:
+            tee(f"Ошибка фоновой задачи: {exc}")
+            return
         with BROADCAST_JOBS_LOCK:
             job["accounts"][label] = res
         tee(f"готово: отправлено {res['sent']}, проверено чатов {res['checked']}, стоп: {res.get('stopped_reason') or '-'}")
@@ -4611,7 +4747,6 @@ def _run_preset_broadcast_job(preset: str, messages: list[str]) -> None:
         t.join()
 
     job["log"].append("Все анкеты пресета завершили рассылку (или были остановлены).")
-    job["running"] = False
 
 
 @app.route("/api/preset-broadcast/start", methods=["POST"])
@@ -4629,8 +4764,11 @@ def api_preset_broadcast_start():
         existing = BROADCAST_JOBS.get(preset)
         if existing and existing.get("running"):
             return jsonify({"ok": False, "error": "Рассылка для этого пресета уже идёт."})
-        BROADCAST_JOBS[preset] = {"running": True, "stop_event": threading.Event(), "log": [], "accounts": {}}
-    th = threading.Thread(target=_run_preset_broadcast_job, args=(preset, messages), daemon=True)
+        job = {"id": uuid.uuid4().hex, "running": True, "stop_event": threading.Event(),
+               "log": [], "accounts": {}}
+        BROADCAST_JOBS[preset] = job
+    th = threading.Thread(target=_run_job, args=(job, BROADCAST_JOBS_LOCK, _run_preset_broadcast_job, preset, messages),
+                          daemon=True)
     th.start()
     return jsonify({"ok": True})
 
@@ -4648,12 +4786,7 @@ def api_preset_broadcast_stop():
 
 @app.route("/api/preset-broadcast/status", methods=["GET"])
 def api_preset_broadcast_status():
-    preset = request.args.get("preset", "").strip()
-    with BROADCAST_JOBS_LOCK:
-        job = BROADCAST_JOBS.get(preset)
-        if not job:
-            return jsonify({"ok": True, "running": False, "log": [], "accounts": {}})
-        return jsonify({"ok": True, "running": job["running"], "log": job["log"][-300:], "accounts": job["accounts"]})
+    return _preset_job_status(BROADCAST_JOBS, BROADCAST_JOBS_LOCK)
 
 
 @app.route("/api/profile", methods=["POST"])
