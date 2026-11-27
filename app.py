@@ -995,107 +995,627 @@ def _register_vk_token(vk_token: str, proxy: str = "") -> dict:
             "refresh_token": data.get("refreshToken", "")}
 
 def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
-    """Layout wrapper. tab = 'main'|'accounts'|'swipe'."""
-    tabs_html = ""
-    for t, href, label in [("accounts", "/accounts", "Аккаунты"), ("settings", "/settings", "Настройки"),
-                            ("presets", "/presets", "Пресеты")]:
-        cls = "active" if t == tab else ""
-        tabs_html += f'<a href="{href}" class="{cls}">{label}</a>'
+    """Wrap a server-rendered page in the shared navigation and appearance."""
+    pages = {"accounts": "Аккаунты", "settings": "Настройки", "presets": "Пресеты"}
+    title = "Настройки анкеты" if tab == "settings" else pages.get(tab, "Онбординг")
+    links = []
+    for key, label in pages.items():
+        current = ' aria-current="page"' if key == tab else ""
+        links.append(
+            f'<a href="/{key}"{current}><span class="nav-icon icon-{key}" aria-hidden="true"></span>'
+            f'<span>{label}</span></a>'
+        )
     log_html = f'<h3 style="margin-top:30px">Консоль</h3><pre>{log}</pre>' if log else ""
     err_html = f'<p class="err">{error}</p>' if error else ""
-    return PAGE_LAYOUT.replace("{{TABS}}", tabs_html).replace("{{CONTENT}}", content).replace("{{LOG}}", log_html).replace("{{ERROR}}", err_html)
+    return (PAGE_LAYOUT.replace("{{PAGE_TITLE}}", title)
+            .replace("{{TABS}}", "".join(links))
+            .replace("{{CONTENT}}", content)
+            .replace("{{LOG}}", log_html)
+            .replace("{{ERROR}}", err_html))
+
 
 PAGE_LAYOUT = """
-<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<title>Twinby Tool</title>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#18191b">
+<title>{{PAGE_TITLE}} · Twinby Tool</title>
+<script>
+try {
+  if (localStorage.getItem('twinby-theme') === 'light') {
+    document.documentElement.dataset.theme = 'light';
+    document.querySelector('meta[name="theme-color"]').content = '#f5f5f6';
+  }
+} catch {}
+</script>
 <style>
-*{box-sizing:border-box}
-body{font-family:system-ui,sans-serif;max-width:780px;margin:0 auto;padding:0 16px 60px;background:#0d0d0d;color:#eee}
-/* --- tabs --- */
-.tabs{display:flex;gap:0;margin:20px 0 0;border-bottom:2px solid #333}
-.tabs a{padding:12px 22px;color:#888;text-decoration:none;font-weight:600;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-2px;transition:.15s}
-.tabs a:hover{color:#ccc}
-.tabs a.active{color:#3a7;border-bottom-color:#3a7}
-h1{margin:24px 0 0;font-size:22px;font-weight:700;color:#eee}
-.subtitle{color:#666;font-size:13px;margin:4px 0 0}
-label.l{display:block;margin-top:14px;font-size:14px;color:#aaa}
-input[type=text],input[type=number],input[type=date],input[type=file],select,textarea{width:100%;padding:8px;margin-top:4px;background:#1a1a1a;color:#eee;border:1px solid #333;border-radius:6px}
-textarea{min-height:70px;resize:vertical}
-button.go{margin-top:16px;padding:10px 20px;background:#3a7;color:#000;border:0;border-radius:6px;font-weight:600;cursor:pointer;font-size:14px}
-button.go:hover{background:#4b8}
-button.go.alt{background:#444;color:#eee}
-button.go.alt:hover{background:#555}
-button.go.dislike{background:#a33;color:#fff}
-button.go.dislike:hover{background:#c44}
-button.go.danger{background:#a33;color:#fff}
-pre{white-space:pre-wrap;background:#1a1a1a;padding:12px;border-radius:6px;border:1px solid #333;font-size:13px;max-height:400px;overflow-y:auto}
-fieldset{margin-top:22px;border:1px solid #333;border-radius:8px;padding:4px 14px 14px}
-legend{color:#3a7;padding:0 6px;font-weight:600}
-.warn{color:#f90;font-size:13px}.err{color:#f55}.ok{color:#3a7}.hint{color:#666;font-size:12px}
-.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.chip{position:relative}
-.chip input{position:absolute;opacity:0;pointer-events:none}
-.chip span{display:inline-block;padding:7px 13px;border:1px solid #333;border-radius:999px;background:#1a1a1a;color:#ccc;cursor:pointer;font-size:14px;user-select:none;transition:.15s}
-.chip input:checked+span{background:#3a7;color:#000;border-color:#3a7;font-weight:600}
-.chip input:focus-visible+span{outline:2px solid #fff}
-h4{margin:16px 0 0;color:#aaa;font-weight:500;font-size:13px}
-.sug button{margin:4px 6px 0 0;padding:6px 12px;border-radius:999px;border:1px solid #333;background:#1a1a1a;color:#eee;cursor:pointer}
-.sug button:hover{border-color:#3a7}
-#cityPick{margin-top:6px;color:#3a7;font-size:14px}
-.row{display:flex;gap:10px}.row>div{flex:1}
-.actions-row{display:flex;gap:10px;margin-top:8px}
-/* account cards */
-.acct-card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px 16px;margin-top:10px;display:flex;justify-content:space-between;align-items:center}
-.acct-card .info{font-size:14px}.acct-card .info b{color:#3a7}
-.acct-card .jwt{font-size:11px;color:#666;word-break:break-all;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.copy-btn{background:#333;color:#eee;border:1px solid #555;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px}
-.copy-btn:hover{background:#444}
-body{max-width:1120px;padding:26px clamp(16px,3vw,38px) 60px;background:radial-gradient(ellipse at 85% -15%,#3b285b 0,transparent 42%),#11121a;color:#f3f1f7}
-h1{font-size:28px;letter-spacing:-.5px}.subtitle{color:#a7a2b2}
-.tabs{position:sticky;top:0;z-index:5;padding-top:8px;background:#11121aeF;border-color:#302b3b;backdrop-filter:blur(14px)}
-.tabs a{padding:12px 16px;color:#aaa4b5;border-radius:10px 10px 0 0;border-bottom:2px solid transparent}
-.tabs a.active{color:#e5d8ff;border-color:#bb9cff;background:#bb9cff12}
-fieldset,.acct-card,.swipe-card{background:linear-gradient(145deg,#1e1b27,#191720);border-color:#353043;border-radius:14px}
-legend{color:#cbb8f1}label.l{color:#c7c1d0}
-input[type=text],input[type=number],input[type=date],input[type=file],select,textarea{background:#14131b;border-color:#393446;border-radius:9px;padding:10px;color:#f3f1f7}
-input:focus,select:focus,textarea:focus{outline:2px solid #bb9cff55;border-color:#bb9cff}
-button.go{background:linear-gradient(110deg,#c0a3ff,#e6a5bf);color:#201a2b;border-radius:10px;padding:11px 17px}
-button.go:hover{filter:brightness(1.08)}.copy-btn{border-color:#4a4258;border-radius:8px;padding:7px 11px}
-.hint{color:#a29bad}.err{color:#ff9fad}.ok{color:#a8e5ce}
-@media(max-width:680px){body{padding:14px 12px 40px}.tabs{overflow-x:auto}.tabs a{white-space:nowrap;padding:10px 12px;font-size:13px}.row{flex-direction:column}.acct-card{gap:12px;align-items:flex-start}}
-/* swipe card */
-.swipe-card{background:#1a1a1a;border:1px solid #333;border-radius:10px;padding:16px;margin-top:12px;text-align:center}
-.swipe-card img{max-width:200px;max-height:260px;border-radius:8px;margin-bottom:10px}
-.swipe-card .name{font-size:18px;font-weight:600;color:#eee}
-.swipe-card .meta{font-size:13px;color:#888;margin-top:4px}
-table.log-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
-table.log-table td,table.log-table th{padding:6px 10px;border-bottom:1px solid #222;text-align:left}
-table.log-table th{color:#888;font-weight:500}
-.modal-overlay{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:50;padding:20px}
-.modal-box{background:#191720;border:1px solid #353043;border-radius:14px;padding:22px;max-width:480px;width:100%;max-height:85vh;overflow-y:auto}
-.modal-box h3{margin:0 0 14px;color:#cbb8f1}
-.modal-box .mrow{margin-top:10px;font-size:13px;color:#c7c1d0}
-.modal-box .mrow b{color:#f3f1f7}
-.modal-box textarea.mono{font-family:monospace;font-size:11px;min-height:60px}
-.modal-close{float:right;cursor:pointer;color:#aaa;font-size:20px;line-height:1}
-.modal-close:hover{color:#fff}
-</style></head><body>
-<h1>Twinby Tool</h1>
-<p class="subtitle">Онбординг, профиль, свайпы. Токены уходят только на twinby.ru.</p>
+:root {
+  color-scheme: dark;
+  --canvas: #111214;
+  --wall: #333539;
+  --wall-light: #56595d;
+  --page: #18191b;
+  --rail: #242528;
+  --rail-glass: rgba(33, 34, 37, .67);
+  --dock: #28292c;
+  --dock-glass: rgba(43, 44, 47, .76);
+  --surface: #232426;
+  --field: #191a1c;
+  --hover: #303134;
+  --ink: #f3f3f4;
+  --muted: #b5b6bb;
+  --quiet: #a1a3a8;
+  --line: rgba(255, 255, 255, .115);
+  --rim: rgba(255, 255, 255, .25);
+  --shine: rgba(255, 255, 255, .13);
+  --active: rgba(255, 255, 255, .11);
+  --button-top: #f7f7f7;
+  --button-bottom: #d4d5d7;
+  --button-ink: #151618;
+  --danger: #ffacac;
+  --warn: #eccd8d;
+  --success: #a6ceba;
+  --hero-base: #212225;
+  --hero-lit: #35373b;
+  --fold-ink: rgba(0, 0, 0, .68);
+  --fold-body: rgba(118, 120, 124, .36);
+  --fold-light: rgba(241, 242, 244, .64);
+  --frame-gap: clamp(14px, 2.4vw, 38px);
+  --radius: 28px;
+  --pane-pad: clamp(25px, 3.3vw, 54px);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+}
 
-<div class="tabs">{{TABS}}</div>
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #d5d6d8;
+  --wall: #b6b8bc;
+  --wall-light: #f3f3f4;
+  --page: #f5f5f6;
+  --rail: #e3e4e6;
+  --rail-glass: rgba(235, 236, 238, .65);
+  --dock: #e8e9eb;
+  --dock-glass: rgba(240, 240, 242, .79);
+  --surface: #fff;
+  --field: #f5f5f6;
+  --hover: #e9e9eb;
+  --ink: #1c1d20;
+  --muted: #56585e;
+  --quiet: #62646b;
+  --line: rgba(22, 23, 26, .14);
+  --rim: rgba(255, 255, 255, .86);
+  --shine: rgba(255, 255, 255, .67);
+  --active: rgba(255, 255, 255, .65);
+  --button-top: #38393c;
+  --button-bottom: #212225;
+  --button-ink: #fff;
+  --danger: #a02d35;
+  --warn: #785816;
+  --success: #306445;
+  --hero-base: #e4e5e7;
+  --hero-lit: #ccced1;
+  --fold-ink: rgba(82, 84, 89, .42);
+  --fold-body: rgba(252, 252, 253, .28);
+  --fold-light: rgba(255, 255, 255, .95);
+}
 
-{{CONTENT}}
+* { box-sizing: border-box; }
+html { min-height: 100%; background: var(--canvas); }
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: var(--frame-gap);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  isolation: isolate;
+}
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(90% 150% at -22% 108%, transparent 49%, var(--wall) 58%, var(--wall-light) 60%, var(--wall) 61%, transparent 69%),
+    radial-gradient(90% 140% at 101% -58%, var(--wall-light), var(--wall) 51%, var(--canvas) 73%);
+}
+a { color: inherit; }
+button, input, select, textarea { font: inherit; }
+button, select, input[type="checkbox"], input[type="radio"] { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+::selection { color: var(--button-ink); background: var(--ink); }
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 12px;
+  z-index: 60;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  transform: translateY(-160%);
+}
+.skip-link:focus { transform: none; }
 
-{{LOG}}
-{{ERROR}}
+.app-shell {
+  display: grid;
+  grid-template-columns: clamp(196px, 16vw, 238px) minmax(0, 1fr);
+  min-height: calc(100vh - var(--frame-gap) - var(--frame-gap));
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  border-top-color: var(--rim);
+  border-radius: var(--radius);
+  box-shadow: 0 30px 75px rgba(0, 0, 0, .28), 0 3px 12px rgba(0, 0, 0, .12);
+}
+.app-sidebar {
+  min-width: 0;
+  border-radius: var(--radius) 0 0 var(--radius);
+  border-right: 1px solid var(--line);
+  background: var(--rail);
+  box-shadow: inset 1px 0 var(--shine);
+}
+.sidebar-inner {
+  position: sticky;
+  top: var(--frame-gap);
+  display: flex;
+  flex-direction: column;
+  min-height: 310px;
+  height: calc(100vh - var(--frame-gap) - var(--frame-gap) - 2px);
+  padding: 25px 13px 16px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-inline: 10px;
+  color: var(--ink);
+  white-space: nowrap;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -.055em;
+}
+.brand-name span { color: var(--muted); font-weight: 450; }
+.brand-mark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 37px;
+  height: 37px;
+  border: 1px solid rgba(255, 255, 255, .35);
+  border-radius: 12px;
+  background: linear-gradient(148deg, #66686d 0%, #292a2e 47%, #191a1c 66%, #46474b);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, .45), inset 0 -1px 2px rgba(0, 0, 0, .7), 0 2px 5px rgba(0, 0, 0, .24);
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0;
+}
+.tabs { display: grid; gap: 5px; margin-top: 40px; }
+.tabs a, .theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 13px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: background .16s, color .16s;
+}
+.tabs a[aria-current="page"] {
+  border-color: var(--line);
+  background: linear-gradient(165deg, var(--shine), transparent 75%), var(--active);
+  box-shadow: inset 0 1px var(--shine), 0 2px 4px rgba(0, 0, 0, .06);
+  color: var(--ink);
+}
+.theme-toggle {
+  width: 100%;
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding-top: 15px;
+  text-align: left;
+}
+.nav-icon, .theme-icon {
+  position: relative;
+  display: inline-block;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+}
+.nav-icon::before, .nav-icon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+.icon-accounts::before {
+  top: 1px; left: 6px;
+  width: 8px; height: 8px;
+  border: 1.7px solid currentColor;
+  border-radius: 50%;
+}
+.icon-accounts::after {
+  bottom: 1px; left: 2px;
+  width: 16px; height: 8px;
+  border: 1.7px solid currentColor;
+  border-radius: 8px 8px 3px 3px;
+}
+.icon-settings {
+  background: linear-gradient(currentColor, currentColor) center 5px / 17px 1.6px no-repeat,
+              linear-gradient(currentColor, currentColor) center 14px / 17px 1.6px no-repeat;
+}
+.icon-settings::before, .icon-settings::after {
+  width: 3.5px; height: 7px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.icon-settings::before { top: 2.5px; left: 5px; }
+.icon-settings::after { top: 11.5px; right: 5px; }
+.icon-presets::before {
+  top: 2px; left: 2px;
+  width: 6.5px; height: 6.5px;
+  border-radius: 1.8px;
+  background: currentColor;
+  box-shadow: 9px 0, 0 9px, 9px 9px;
+}
+.theme-icon::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1.6px solid currentColor;
+  border-radius: 50%;
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+
+.app-content {
+  min-width: 0;
+  padding: var(--pane-pad);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--page);
+}
+.app-content:focus { outline: 0; }
+.page-inner { max-width: 1360px; min-width: 0; margin-inline: auto; }
+.page-heading {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: flex;
+  align-items: end;
+  min-height: clamp(122px, 11vw, 155px);
+  margin-bottom: 24px;
+  padding: 24px clamp(24px, 2.6vw, 40px);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: linear-gradient(106deg, var(--hero-base) 18%, var(--hero-lit));
+  box-shadow: inset 0 1px var(--shine);
+}
+.page-heading h1 {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: clamp(32px, 3.3vw, 52px);
+  font-weight: 640;
+  letter-spacing: -.052em;
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+.glass-fold {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  inset: 0 0 0 33%;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28%);
+  mask-image: linear-gradient(90deg, transparent, #000 28%);
+}
+.glass-fold::before, .glass-fold::after {
+  content: "";
+  position: absolute;
+  width: 100%;
+  height: 280%;
+  right: -10%;
+  top: -222%;
+  border: 1px solid var(--fold-light);
+  border-radius: 50%;
+  transform: rotate(-24deg);
+  background: linear-gradient(177deg, transparent 53%, var(--fold-ink) 75%, var(--fold-body) 91%, var(--fold-light) 100%);
+  box-shadow: inset -3px -5px 12px rgba(255, 255, 255, .16), 2px 7px 13px var(--fold-ink);
+}
+.glass-fold::after { top: -166%; right: -18%; width: 91%; z-index: -1; }
+h2, h3, h4, legend { color: var(--ink); }
+h2, h3 { margin: 24px 0 10px; font-weight: 620; letter-spacing: -.03em; line-height: 1.25; }
+h3 { font-size: 19px; }
+h4 { margin: 18px 0 5px; font-size: 14px; font-weight: 600; }
+p { margin: 10px 0; }
+.hint, .subtitle { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.page-heading + .hint { max-width: 78ch; margin: 0 0 22px; font-size: 14px; }
+.warn { color: var(--warn); }
+.err, .danger-text { color: var(--danger); }
+.ok, #cityPick { color: var(--success); }
+.err, .info, .mrow { overflow-wrap: anywhere; }
+
+fieldset, .form-panel, .acct-card, .swipe-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: inset 0 1px var(--shine);
+}
+fieldset {
+  min-inline-size: 0;
+  margin: 20px 0;
+  padding: 12px 22px 22px;
+}
+legend { max-width: 100%; padding: 0 6px; font-size: 16px; font-weight: 630; letter-spacing: -.02em; }
+.form-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(95px, 124px) auto;
+  align-items: end;
+  gap: 14px;
+  padding: 20px;
+}
+.form-panel > div { min-width: 0; }
+.form-panel label.l, .form-panel .go { margin-top: 0; }
+label.l { display: block; margin-top: 15px; color: var(--muted); font-size: 13px; font-weight: 550; }
+input[type="text"], input[type="number"], input[type="date"], input[type="file"], select, textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--field);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.4;
+}
+textarea { min-height: 76px; resize: vertical; }
+input::placeholder, textarea::placeholder { color: var(--quiet); opacity: 1; }
+input[type="file"] { padding: 6px; color: var(--muted); }
+input[type="file"]::file-selector-button {
+  margin-right: 8px; padding: 6px 10px; border: 0; border-radius: 7px;
+  background: var(--hover); color: var(--ink); font: inherit;
+}
+input[type="checkbox"], input[type="radio"] { accent-color: var(--ink); }
+button.go, .copy-btn, .sug button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--field);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 570;
+  line-height: 1.25;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color .15s, filter .15s;
+}
+button.go {
+  margin-top: 14px;
+  background: linear-gradient(var(--button-top), var(--button-bottom));
+  color: var(--button-ink);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .25), 0 2px 5px rgba(0, 0, 0, .1);
+}
+button.go.alt, button.go.danger, button.go.dislike { background: var(--field); color: var(--ink); box-shadow: none; }
+button.go.danger, button.go.dislike, .copy-btn.danger { color: var(--danger); }
+.copy-btn, .sug button { min-height: 36px; padding: 7px 12px; font-size: 13px; }
+button:disabled { opacity: .5; cursor: default; }
+.chips, .sug, .row, .actions-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.row, .actions-row { gap: 12px; }
+.row > div { flex: 1 1 180px; min-width: 0; }
+.chip { position: relative; max-width: 100%; cursor: pointer; }
+.chip input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+.chip span {
+  display: inline-block; padding: 6px 12px; border: 1px solid var(--line);
+  border-radius: 99px; background: var(--field); color: var(--muted); font-size: 13px; overflow-wrap: anywhere;
+}
+.chip input:checked + span { background: var(--ink); color: var(--button-ink); }
+.chip input:focus-visible + span { outline: 2px solid var(--ink); outline-offset: 2px; }
+.chip input:disabled + span { opacity: .48; cursor: default; }
+.acct-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 9px 0; padding: 16px 18px; }
+.acct-card > .info { min-width: 0; flex: 1 1 210px; }
+.acct-card[data-account-label] { cursor: pointer; }
+.account-title {
+  padding: 0; border: 0; background: none; color: var(--ink); font-weight: 650;
+  text-align: start; overflow-wrap: anywhere;
+}
+.account-summary, .account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.account-summary { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.account-summary strong { color: var(--ink); font-weight: 600; }
+.account-status {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border: 1px solid var(--line); border-radius: 99px; background: var(--field);
+}
+.account-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.account-status[data-enabled="true"] { color: var(--success); }
+.acct-card .jwt {
+  display: block; margin-top: 8px; color: var(--quiet); font: 12px/1.4 ui-monospace, monospace;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.account-actions { max-width: 100%; }
+.account-actions form { margin: 0; }
+.empty-state {
+  display: flex; gap: 13px; align-items: center; margin: 20px 0 0; padding: 20px 0;
+  border-top: 1px solid var(--line); color: var(--muted); font-size: 14px;
+}
+.empty-icon { display: grid; flex: 0 0 38px; place-items: center; width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--quiet); }
+.swipe-card { margin: 12px 0; padding: 16px; text-align: center; }
+.swipe-card img { max-width: min(100%, 200px); max-height: 260px; border-radius: 12px; }
+.swipe-card .meta { color: var(--muted); font-size: 13px; }
+pre { max-height: 380px; padding: 14px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.log-table td, .log-table th { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
+.modal-overlay { position: fixed; z-index: 40; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, .5); }
+.modal-box { width: min(100%, 470px); max-height: calc(100% - 24px); overflow: auto; padding: 22px; border: 1px solid var(--rim); border-radius: 22px; background: var(--dock); color: var(--ink); box-shadow: 0 15px 60px rgba(0, 0, 0, .3); }
+.modal-box h3 { margin: 0 52px 14px 0; overflow-wrap: anywhere; }
+.modal-box .mrow { margin-top: 10px; font-size: 14px; }
+.modal-box .mono { font: 13px/1.5 ui-monospace, monospace; }
+.modal-close { float: right; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--field); color: var(--ink); font-size: 24px; line-height: 1; }
+.account-flags { display: grid; gap: 8px; clear: both; padding-top: 14px; }
+.account-flag {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 52px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--field); font-size: 14px; font-weight: 550; cursor: pointer;
+}
+.account-flag:has(input:checked) { color: var(--success); }
+.account-flag input { flex: none; width: 24px; height: 24px; margin: 0; accent-color: var(--success); }
+.account-flags .err { margin: 0; font-size: 13px; }
+
+@supports ((-webkit-backdrop-filter: blur(16px)) or (backdrop-filter: blur(16px))) {
+  .app-sidebar { background: var(--rail-glass); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); }
+  .modal-box { background: var(--dock-glass); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); }
+}
+@media (hover: hover) {
+  .tabs a:hover, .theme-toggle:hover { color: var(--ink); background-color: var(--active); }
+  .copy-btn:hover, .sug button:hover, .chip span:hover { background-color: var(--hover); }
+  button.go:hover { filter: brightness(1.08); }
+  .acct-card[onclick]:hover { border-color: var(--quiet); }
+  .account-flag:hover, .modal-close:hover { background: var(--hover); }
+}
+@media (max-width: 760px), (pointer: coarse) and (max-width: 1000px) and (max-height: 520px) {
+  html { scroll-padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px)); background: var(--page); }
+  body { padding: 0; }
+  body::before { display: none; }
+  .app-shell { display: block; min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; }
+  .app-sidebar {
+    border: 0; border-radius: 0; background: transparent; box-shadow: none;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  .sidebar-inner {
+    position: static; flex-direction: row; justify-content: space-between; align-items: center;
+    min-height: 0; height: auto;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) max(18px, env(safe-area-inset-right, 0px)) 6px max(18px, env(safe-area-inset-left, 0px));
+  }
+  .brand { gap: 9px; padding: 0; font-size: 17px; }
+  .brand-mark { width: 32px; height: 32px; border-radius: 10px; font-size: 18px; }
+  .theme-toggle { justify-content: center; width: 44px; height: 44px; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); }
+  .theme-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .tabs {
+    position: fixed; z-index: 20; right: max(12px, env(safe-area-inset-right, 0px)); bottom: max(10px, env(safe-area-inset-bottom, 0px)); left: max(12px, env(safe-area-inset-left, 0px));
+    grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; max-width: 396px;
+    margin: 0 auto; padding: 5px; border: 1px solid var(--line); border-top-color: var(--rim);
+    border-radius: 32px; background: var(--dock);
+    box-shadow: inset 0 1px 2px var(--shine), 0 8px 30px rgba(0, 0, 0, .25);
+  }
+  .tabs a { flex-direction: column; justify-content: center; gap: 4px; min-height: 49px; padding: 4px; border-radius: 27px; font-size: 11px; line-height: 1.15; }
+  .tabs a[aria-current="page"] { box-shadow: inset 0 1px var(--shine); }
+  .app-content {
+    padding: 14px max(16px, env(safe-area-inset-right, 0px)) calc(100px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+    border-radius: 0;
+  }
+  .page-heading { min-height: 108px; margin-bottom: 16px; padding: 18px 20px; border-radius: 19px; }
+  .page-heading h1 { font-size: clamp(29px, 7.5vw, 37px); }
+  .glass-fold { left: 39%; }
+  .page-heading + .hint { margin-bottom: 16px; }
+  .form-panel { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 13px; padding: 16px; }
+  .form-panel > div:first-child { grid-column: 1 / -1; }
+  fieldset { margin: 16px 0; padding: 10px 15px 17px; }
+  input[type="text"], input[type="number"], input[type="date"], input[type="file"], select, textarea { font-size: 16px; }
+  .copy-btn, .chip span, .sug button { min-height: 40px; }
+  .chip span { display: inline-flex; align-items: center; }
+  .acct-card[data-account-label] { align-items: stretch; flex-flow: column nowrap; gap: 12px; padding: 13px 14px; }
+  .acct-card[data-account-label] > .info { flex: none; }
+  .account-actions .copy-btn { min-height: 44px; }
+  .modal-overlay { padding-bottom: max(16px, env(safe-area-inset-bottom, 0px)); }
+  .modal-box .mono { font-size: 16px; }
+  @supports ((-webkit-backdrop-filter: blur(16px)) or (backdrop-filter: blur(16px))) {
+    .tabs { background: linear-gradient(155deg, var(--shine), transparent 58%), var(--dock-glass); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); }
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-sidebar, .tabs, .modal-box { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .app-sidebar { background: var(--rail); }
+  .modal-box { background: var(--dock); }
+}
+@media (max-width: 760px) and (prefers-reduced-transparency: reduce),
+       (pointer: coarse) and (max-width: 1000px) and (max-height: 520px) and (prefers-reduced-transparency: reduce) {
+  .app-sidebar { background: transparent; }
+  .tabs { background: var(--dock); }
+}
+@media (orientation: landscape) and (pointer: coarse) and (max-width: 1000px) and (max-height: 520px) {
+  .page-heading { min-height: 74px; margin-bottom: 14px; padding-block: 12px; }
+  .tabs a { flex-direction: row; gap: 7px; min-height: 44px; font-size: 12px; }
+  .form-panel { grid-template-columns: minmax(0, 1fr) minmax(92px, 120px) auto; }
+  .form-panel > div:first-child { grid-column: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#content">К содержимому</a>
+<div class="app-shell">
+  <aside class="app-sidebar">
+    <div class="sidebar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">T</span>
+        <span class="brand-name">Twinby <span>Tool</span></span>
+      </div>
+      <nav class="tabs" aria-label="Основная навигация">{{TABS}}</nav>
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Включить светлую тему">
+        <span class="theme-icon" aria-hidden="true"></span>
+        <span class="theme-label">Светлая тема</span>
+      </button>
+    </div>
+  </aside>
+  <main class="app-content" id="content" tabindex="-1">
+    <div class="page-inner">
+      <header class="page-heading">
+        <h1>{{PAGE_TITLE}}</h1>
+        <span class="glass-fold" aria-hidden="true"></span>
+      </header>
+      {{CONTENT}}
+      {{LOG}}
+      {{ERROR}}
+    </div>
+  </main>
+</div>
 
 <div id="acctModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeAccountModal()">
-  <div class="modal-box" id="acctModalBox"></div>
+  <div class="modal-box" id="acctModalBox" role="dialog" aria-modal="true" aria-labelledby="acctModalTitle"></div>
 </div>
 
 <script>
+const themeToggle = document.getElementById('themeToggle');
+function updateThemeToggle() {
+  const light = document.documentElement.dataset.theme === 'light';
+  themeToggle.querySelector('.theme-label').textContent = light ? 'Тёмная тема' : 'Светлая тема';
+  themeToggle.setAttribute('aria-label', light ? 'Включить тёмную тему' : 'Включить светлую тему');
+  document.querySelector('meta[name="theme-color"]').content = light ? '#f5f5f6' : '#18191b';
+}
+themeToggle.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('twinby-theme', next); } catch {}
+  updateThemeToggle();
+});
+updateThemeToggle();
 function esc_(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+function accountStatusText(enabled) {
+  return enabled ? 'Да' : 'Нет';
+}
 
 function openAccountModal(label){
   fetch('/api/accounts').then(r=>r.json()).then(all=>{
@@ -1103,33 +1623,69 @@ function openAccountModal(label){
     if(!a){alert('Аккаунт не найден');return;}
     const box=document.getElementById('acctModalBox');
     box.innerHTML=''
-      +'<span class="modal-close" id="acctModalCloseBtn">&times;</span>'
-      +'<h3>'+esc_(label)+(a.name?' · '+esc_(a.name):'')+'</h3>'
+      +'<button type="button" class="modal-close" id="acctModalCloseBtn" aria-label="Закрыть">&times;</button>'
+      +'<h3 id="acctModalTitle">'+esc_(a.name||a.preset||'Аккаунт')+'</h3>'
       +'<div class="mrow"><b>Лайков:</b> '+(a.likes_done||0)+' &nbsp; <b>Дизлайков:</b> '+(a.dislikes_done||0)+'</div>'
       +'<div class="mrow"><b>Пресет:</b> '+esc_(a.preset||'—')+' &nbsp; <b>Город:</b> '+esc_(a.city||'—')+'</div>'
-      +'<div class="mrow"><b>Онбординг:</b> '+(a.onboarded?'✅':'❌ '+esc_(a.onboard_error||''))+' &nbsp; <b>Видео:</b> '+(a.video_verified?'✅':'—')+'</div>'
+      +'<div class="mrow"><b>Онбординг:</b> '+(a.onboarded?'Пройден':'Не пройден')+(a.onboard_error?' · '+esc_(a.onboard_error):'')+' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
       +'<div class="mrow"><label class="l" style="margin-top:12px">VK данные (id:pass:token)</label>'
       +'<textarea class="mono" readonly>'+esc_(a.vk_id||'')+':'+esc_(a.vk_pass||'')+':'+esc_(a.vk_token||'')+'</textarea></div>'
       +'<div class="mrow"><label class="l">JWT</label><textarea class="mono" readonly>'+esc_(a.jwt||'')+'</textarea></div>'
-      +'<div class="mrow"><label class="l" style="margin-top:14px"><input type="checkbox" id="mVerified"> Верификация пройдена</label></div>'
-      +'<div class="mrow"><label class="l"><input type="checkbox" id="mPremium"> Подписка (премиум)</label></div>';
-    document.getElementById('acctModalCloseBtn').addEventListener('click', closeAccountModal);
-    const vBox=document.getElementById('mVerified');
-    const pBox=document.getElementById('mPremium');
-    vBox.checked=!!a.verified;
-    pBox.checked=!!a.premium;
-    const save=()=>saveAccountFlags(label, vBox.checked, pBox.checked);
-    vBox.addEventListener('change', save);
-    pBox.addEventListener('change', save);
+      +'<div class="account-flags">'
+      +'<label class="account-flag"><span>Верификация пройдена</span><input type="checkbox" name="verified"></label>'
+      +'<label class="account-flag"><span>Подписка (премиум)</span><input type="checkbox" name="premium"></label>'
+      +'<p class="err" role="status" hidden></p></div>';
+    const closeButton=document.getElementById('acctModalCloseBtn');
+    closeButton.addEventListener('click', closeAccountModal);
+    for(const checkbox of box.querySelectorAll('.account-flag input')){
+      checkbox.checked=!!a[checkbox.name];
+      checkbox.addEventListener('change', ()=>saveAccountFlag(label, checkbox));
+    }
+    accountModalTrigger=document.activeElement;
     document.getElementById('acctModal').style.display='flex';
+    closeButton.focus();
   });
 }
 
-function closeAccountModal(){document.getElementById('acctModal').style.display='none';}
+let accountModalTrigger=null;
+function closeAccountModal(){
+  document.getElementById('acctModal').style.display='none';
+  accountModalTrigger?.focus();
+  accountModalTrigger=null;
+}
+document.addEventListener('keydown', event => {
+  if(event.key==='Escape' && document.getElementById('acctModal').style.display==='flex') closeAccountModal();
+});
 
-function saveAccountFlags(label, verified, premium){
-  fetch('/api/accounts/'+encodeURIComponent(label)+'/flags',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({verified:verified,premium:premium})});
+async function saveAccountFlag(label, checkbox){
+  const flag=checkbox.name;
+  const enabled=checkbox.checked;
+  const controls=checkbox.closest('.account-flags');
+  const inputs=controls.querySelectorAll('input');
+  const error=controls.querySelector('[role="status"]');
+  for(const input of inputs) input.disabled=true;
+  error.hidden=true;
+  try {
+    const response=await fetch('/api/accounts/'+encodeURIComponent(label)+'/flags',{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({[flag]:enabled})
+    });
+    if(!response.ok || !(await response.json()).ok) throw new Error();
+    if(typeof ACCOUNTS_CACHE!=='undefined' && Object.hasOwn(ACCOUNTS_CACHE, label)){
+      ACCOUNTS_CACHE[label][flag]=enabled;
+    }
+    for(const card of document.querySelectorAll('.acct-card[data-account-label]')){
+      if(card.dataset.accountLabel!==label) continue;
+      const status=card.querySelector('[data-account-flag="'+flag+'"]');
+      status.dataset.enabled=String(enabled);
+      status.querySelector('strong').textContent=accountStatusText(enabled);
+    }
+  } catch {
+    checkbox.checked=!enabled;
+    error.textContent='Не удалось сохранить статус. Попробуйте ещё раз.';
+    error.hidden=false;
+  } finally {
+    for(const input of inputs) input.disabled=false;
+  }
 }
 
 async function copyText(button) {
@@ -1153,13 +1709,13 @@ async function copyText(button) {
     const copied = document.execCommand('copy');
     field.remove();
     if (!copied) {
-      button.textContent = 'Copy failed';
+      button.textContent = 'Не удалось';
       setTimeout(() => button.textContent = original, 1800);
       return;
     }
   }
   button.dataset.original = original;
-  button.textContent = 'Copied';
+  button.textContent = 'Скопировано';
   setTimeout(() => button.textContent = original, 1200);
 }
 </script>
@@ -1169,7 +1725,7 @@ async function copyText(button) {
 PAGE_MAIN = """
 <form method="post" action="/" enctype="multipart/form-data">
   <label class="l">Access token (JWT)</label>
-  <textarea id="token" name="token" required placeholder="Вставь JWT токен или получи через вкладку Аккаунты">{{ f.token }}</textarea>
+  <textarea id="token" name="token" required placeholder="Введите JWT-токен">{{ f.token }}</textarea>
 
   <label class="l"><input type="checkbox" name="profile_only" {{ 'checked' if f.profile_only }}>
     Только профиль (онбординг на этом аккаунте уже пройден)</label>
@@ -1270,7 +1826,7 @@ document.addEventListener('DOMContentLoaded',()=>{setTimeout(loadCurrentPhotos,5
     <input type="text" name="height" value="{{ f.height }}" inputmode="numeric" style="max-width:140px">
 
     <label class="l">Город (начни вводить название и выбери из подсказок)</label>
-    <input type="text" id="cityQ" autocomplete="off" placeholder="например: Моск">
+    <input type="text" id="cityQ" autocomplete="off" placeholder="Введите город">
     <input type="hidden" name="city_id" id="cityId" value="{{ f.city_id }}">
     <input type="hidden" name="city_name" id="cityName" value="{{ f.city_name }}">
     <div class="sug" id="citySug"></div>
@@ -1296,7 +1852,7 @@ document.addEventListener('DOMContentLoaded',()=>{setTimeout(loadCurrentPhotos,5
     <p class="hint">Числа за кнопками образования, детей, алкоголя и курения из HAR не подтверждены (см. комментарий в app.py).</p>
 
     <label class="l">Языки</label>
-    <input type="text" id="langFilter" placeholder="фильтр по названию">
+    <input type="text" id="langFilter" placeholder="Поиск языка">
     <div class="chips" id="langs">
       {% for lid, lname in languages %}
       <label class="chip" data-n="{{ lname|lower }}"><input type="checkbox" name="language" value="{{ lid }}" {{ 'checked' if lid in f.language }}><span>{{ lname }}</span></label>
@@ -1358,7 +1914,6 @@ $('langFilter').addEventListener('input', e => {
 """
 
 PAGE_MAIN = r"""
-<h2>Онбординг</h2>
 <p class="hint">Выбери сохранённый аккаунт. Параметры анкеты настраиваются отдельно во вкладке «Настройки».</p>
 {% if accounts %}
 <form method="post" action="/_legacy-onboarding" enctype="multipart/form-data">
@@ -1380,11 +1935,10 @@ PAGE_MAIN = r"""
   <label class="l"><input type="checkbox" name="dry_run" value="1"> Предпросмотр запросов (dry-run)</label>
   <button class="go" type="submit" name="mode" value="full">Запустить для выбранного аккаунта</button>
 </form>
-{% else %}<div class="acct-card"><div class="info">Сохранённых аккаунтов пока нет. Добавь аккаунт на вкладке «Аккаунты», затем вернись сюда.</div><a class="copy-btn" href="/accounts">??????? ????????</a></div>{% endif %}
+{% else %}<div class="acct-card"><div class="info">Сохранённых аккаунтов пока нет. Добавь аккаунт на вкладке «Аккаунты», затем вернись сюда.</div><a class="copy-btn" href="/accounts">Открыть аккаунты</a></div>{% endif %}
 """
 
 PAGE_SETTINGS = r"""
-<h2>Настройки анкеты</h2>
 
 <fieldset>
   <legend>VK аккаунты (пул для регистрации)</legend>
@@ -1396,7 +1950,7 @@ PAGE_SETTINGS = r"""
   <p class="hint">В пуле сейчас: {{ vk_stats.total }} всего · {{ vk_stats.available }} доступно ·
     {{ vk_stats.used }} использовано.</p>
   <form method="post" action="/settings/vk-pool">
-    <textarea name="vk_tokens_bulk" placeholder="48450410875:xL4Z9GJBnR2pcU6B:vk1.a.lVBxIepx...&#10;213312::vk1.a.RJTENMG0..."></textarea>
+    <textarea name="vk_tokens_bulk" placeholder="Введите VK-аккаунты"></textarea>
     <button class="go" type="submit">Добавить VK аккаунты</button>
   </form>
   <form method="post" action="/settings/vk-pool/clear" style="margin-top:10px" onsubmit="return confirm('Удалить ВСЕ VK-токены из пула (включая уже использованные)? Отменить нельзя.');">
@@ -1412,7 +1966,7 @@ PAGE_SETTINGS = r"""
   {% if proxy_added is not none %}<p class="ok">Добавлено новых прокси: {{ proxy_added }}.</p>{% endif %}
   <p class="hint">В пуле прокси сейчас: {{ proxy_stats.total }}.</p>
   <form method="post" action="/settings/proxy-pool">
-    <textarea name="proxies_bulk" placeholder="74.81.81.81:10000:user:pass&#10;74.81.81.81:10001:user:pass"></textarea>
+    <textarea name="proxies_bulk" placeholder="Введите прокси"></textarea>
     <button class="go" type="submit">Добавить прокси</button>
   </form>
 </fieldset>
@@ -1499,9 +2053,9 @@ function loadPhotoPool(){
     const grid=document.getElementById('photoPoolGrid'); grid.innerHTML='';
     (d.files||[]).forEach(name=>{
       const div=document.createElement('div');
-      div.style.cssText='position:relative;width:70px;height:70px;border-radius:8px;overflow:hidden;border:1px solid #333';
+      div.style.cssText='position:relative;width:70px;height:70px;border-radius:8px;overflow:hidden;border:1px solid var(--line)';
       div.innerHTML='<img src="/photo-pool-file/'+encodeURIComponent(name)+'" style="width:100%;height:100%;object-fit:cover">'
-        +'<div style="position:absolute;top:0;right:0;background:rgba(0,0,0,.7);color:#f66;cursor:pointer;padding:2px 5px;font-size:11px" onclick="deletePhotoPoolFile(\''+name.replace(/'/g,"\\'")+'\')">✕</div>';
+        +'<div style="position:absolute;top:0;right:0;background:rgba(0,0,0,.7);color:var(--danger);cursor:pointer;padding:2px 5px;font-size:11px" onclick="deletePhotoPoolFile(\''+name.replace(/'/g,"\\'")+'\')">✕</div>';
       grid.appendChild(div);
     });
     document.getElementById('photoPoolLog').innerText='В пуле фото: '+(d.files||[]).length;
@@ -1534,7 +2088,7 @@ function loadVideoPool(){
     list.innerHTML=files.length?files.map(name=>
       '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #222">'
       +'<span>'+name+'</span>'
-      +'<button type="button" class="copy-btn" style="color:#f55;border-color:#a33" onclick="deleteVideoPoolFile(\''+name.replace(/'/g,"\\'")+'\')">X</button></div>'
+      +'<button type="button" class="copy-btn" style="color:var(--danger);border-color:var(--line)" onclick="deleteVideoPoolFile(\''+name.replace(/'/g,"\\'")+'\')">X</button></div>'
     ).join('') : '<span class="hint">Пул пуст</span>';
     document.getElementById('videoPoolLog').innerText='В пуле видео: '+files.length;
   });
@@ -1582,7 +2136,7 @@ document.addEventListener('DOMContentLoaded',()=>{loadPhotoPool();loadVideoPool(
     {% for key,title,opts in singles %}<label class="l">{{ title }}</label><div class="chips">{% for value,label in opts %}<label class="chip"><input type="radio" name="{{ key }}" value="{{ value }}" {{ 'checked' if f[key]==value }}><span>{{ label }}</span></label>{% endfor %}<label class="chip"><input type="radio" name="{{ key }}" value="" {{ 'checked' if not f[key] }}><span>Не менять</span></label></div>{% endfor %}
   </fieldset>
   <fieldset><legend>Языки и интересы</legend>
-    <label class="l">Языки</label><input type="text" id="settingsLangFilter" placeholder="Фильтр по названию">
+    <label class="l">Языки</label><input type="text" id="settingsLangFilter" placeholder="Поиск языка">
     <div class="chips" id="settingsLangs">{% for lid,lname in languages %}<label class="chip" data-n="{{ lname|lower }}"><input type="checkbox" name="language" value="{{ lid }}" {{ 'checked' if lid in f.language }}><span>{{ lname }}</span></label>{% endfor %}</div>
     <label class="l">Интересы <span class="hint">(максимум 5)</span></label><div id="settingsInterests">{% for group,items in groups.items() %}<h4>{{ group }}</h4><div class="chips">{% for iid,iname in items %}<label class="chip"><input type="checkbox" name="interest" value="{{ iid }}" {{ 'checked' if iid in f.interest }}><span>{{ iname }}</span></label>{% endfor %}</div>{% endfor %}</div>
   </fieldset>
@@ -1608,38 +2162,39 @@ document.addEventListener('DOMContentLoaded',()=>{loadPhotoPool();loadVideoPool(
 """
 
 PAGE_ACCOUNTS = """
-<h2>Аккаунты</h2>
 <p class="hint">Здесь появляются уже зарегистрированные Twinby-аккаунты (с JWT). Чтобы зарегать новые —
   вставь VK-токены во вкладке «Настройки», а затем жми «Зарегать» во вкладке «Пресеты».</p>
+
+{% macro status(flag, label, enabled) %}
+<span class="account-status" data-account-flag="{{ flag }}" data-enabled="{{ 'true' if enabled else 'false' }}">
+  {{ label }} <strong>{{ 'Да' if enabled else 'Нет' }}</strong>
+</span>
+{% endmacro %}
 
 {% if accounts %}
 <h3 style="margin-top:24px">Зарегистрированные аккаунты ({{ accounts|length }})</h3>
 {% for label, acc in accounts.items() %}
-<div class="acct-card" style="cursor:pointer" onclick="openAccountModal('{{ label }}')">
+<div class="acct-card" data-account-label="{{ label }}" onclick="openAccountModal(this.dataset.accountLabel)">
   <div class="info">
-    <b>{{ label }}</b>
-    {% if acc.name %} · {{ acc.name }}{% endif %}
-    {% if acc.user_id %} <span style="color:#666">(id: {{ acc.user_id }})</span>{% endif %}
-    {% if acc.preset %} <span style="color:#888">· пресет: {{ acc.preset }}</span>{% endif %}
-    <br><span style="font-size:12px;color:#888">
-      {% if acc.onboarded %}онбординг ✅{% elif acc.onboarded is defined %}онбординг ❌{% if acc.onboard_error %} ({{ acc.onboard_error }}){% endif %}{% endif %}
-      {% if acc.video_verified %} · видео ✅{% elif acc.onboarded is defined %} · видео —{% endif %}
-      {% if acc.city %} · {{ acc.city }}{% endif %}
-      {% if acc.proxy %} · proxy {{ acc.proxy }}{% endif %}
-      · 👍 {{ acc.likes_done or 0 }} · 👎 {{ acc.dislikes_done or 0 }}
-      · {% if acc.verified %}верификация ✅{% else %}верификация ❌{% endif %}
-      · {% if acc.premium %}премиум ✅{% else %}премиум ❌{% endif %}
-    </span>
-    <br><span class="jwt" title="{{ acc.jwt }}">JWT: {{ acc.jwt[:60] }}...</span>
+    <button class="account-title" type="button" aria-haspopup="dialog">{{ acc.name or acc.preset or 'Аккаунт' }}</button>
+    <div class="account-summary">
+      <span>Лайки <strong>{{ acc.likes_done or 0 }}</strong></span>
+      <span>Дизлайки <strong>{{ acc.dislikes_done or 0 }}</strong></span>
+      {{ status('verified', 'Верификация', acc.verified) }}
+      {{ status('premium', 'Премиум', acc.premium) }}
+    </div>
+    {% if acc.jwt %}<span class="jwt">JWT: {{ acc.jwt|truncate(61, true, '…', 0) }}</span>{% endif %}
   </div>
-  <div style="display:flex;gap:6px;align-items:center">
-    <button class="copy-btn" type="button" data-copy="{{ acc.jwt|e }}" onclick="event.stopPropagation();copyText(this)">Copy JWT</button>
-    <form method="post" action="/accounts" style="margin:0" onclick="event.stopPropagation()"><input type="hidden" name="label" value="{{ label }}">
-      <button class="copy-btn" type="submit" name="action" value="remove" style="color:#f55;border-color:#a33">X</button>
+  <div class="account-actions" onclick="event.stopPropagation()">
+    <button class="copy-btn" type="button" data-copy="{{ acc.jwt or '' }}" onclick="copyText(this)" {{ 'disabled' if not acc.jwt }}>Copy JWT</button>
+    <form method="post" action="/accounts"><input type="hidden" name="label" value="{{ label }}">
+      <button class="copy-btn danger" type="submit" name="action" value="remove">Удалить</button>
     </form>
   </div>
 </div>
 {% endfor %}
+{% else %}
+<p class="empty-state"><span class="empty-icon" aria-hidden="true"><span class="nav-icon icon-accounts"></span></span>Сохранённых аккаунтов пока нет.</p>
 {% endif %}
 """
 
@@ -2692,16 +3247,15 @@ def apply_preset():
 
 # ---- Вкладка: Пресеты ----
 PAGE_PRESETS = r"""
-<h2>Пресеты</h2>
 <p class="hint">Пресет = персона (имя + возраст + пометка). Укажи имя и сколько анкет зарегать —
   софт возьмёт VK-токены из пула (вкладка «Настройки»), прогонит полный онбординг и покажет результат в логе ниже.</p>
 
-<div style="display:flex;gap:12px;margin-bottom:8px;flex-wrap:wrap;align-items:end">
-  <div style="flex:1;min-width:140px"><label class="l">Имя пресета</label>
-    <input type="text" id="newPresetName" placeholder="Артём, 25 (визи)"></div>
-  <div><label class="l">Кол-во анкет</label>
-    <input type="number" id="newPresetCount" value="1" min="1" style="max-width:100px"></div>
-  <button class="go" style="margin-top:0;height:38px" onclick="createAndRegister()">Зарегать</button>
+<div class="form-panel">
+  <div><label class="l" for="newPresetName">Имя пресета</label>
+    <input type="text" id="newPresetName" placeholder="Название пресета"></div>
+  <div><label class="l" for="newPresetCount">Кол-во анкет</label>
+    <input type="number" id="newPresetCount" value="1" min="1"></div>
+  <button class="go" onclick="createAndRegister()">Зарегать</button>
 </div>
 <p class="hint" id="poolStatsLine">Пул VK-токенов: загрузка...</p>
 
@@ -2730,6 +3284,11 @@ function loadAccountsCache(cb){
 
 function accountsForPreset(name){
   return Object.entries(ACCOUNTS_CACHE).filter(([label,a])=>a.preset===name);
+}
+
+function renderAccountStatus(flag, label, enabled){
+  return '<span class="account-status" data-account-flag="'+flag+'" data-enabled="'+Boolean(enabled)+'">'
+    +label+' <strong>'+accountStatusText(enabled)+'</strong></span>';
 }
 
 function createAndRegister(){
@@ -2794,15 +3353,15 @@ function renderPresets(){
   let html='';
   for(const name of Object.keys(PRESETS)){
     const cnt=accountsForPreset(name).length;
-    const cls=OPEN_PRESET===name?'border-color:#3a7':'';
+    const cls=OPEN_PRESET===name?'border-color:var(--quiet)':'';
     html+='<div class="acct-card" style="cursor:pointer;'+cls+'" onclick="openPreset(\''+esc(name)+'\')">'
       +'<div class="info"><b>'+esc(name)+'</b>'
-      +'<br><span style="font-size:12px;color:#888">Анкет: '+cnt+'</span></div>'
+      +'<br><span style="font-size:12px;color:var(--muted)">Анкет: '+cnt+'</span></div>'
       +'<div style="display:flex;gap:6px;align-items:center">'
-      +'<button class="copy-btn" onclick="event.stopPropagation();deletePreset(\''+esc(name)+'\')" style="color:#f55;border-color:#a33">X</button>'
+      +'<button class="copy-btn" onclick="event.stopPropagation();deletePreset(\''+esc(name)+'\')" style="color:var(--danger);border-color:var(--line)">X</button>'
       +'</div></div>';
   }
-  if(!html) html='<p class="hint">Нет пресетов. Создай первый сверху страницы.</p>';
+  if(!html) html='<p class="empty-state"><span class="empty-icon" aria-hidden="true"><span class="nav-icon icon-presets"></span></span>Нет пресетов. Создай первый сверху страницы.</p>';
   box.innerHTML=html;
   if(OPEN_PRESET && PRESETS[OPEN_PRESET]) renderPresetDetail();
   else document.getElementById('presetDetail').style.display='none';
@@ -2820,9 +3379,9 @@ function renderPresetDetail(){
     +'<button type="button" class="go" style="margin-top:0;height:38px" onclick="bulkRegisterMore()">Зарегать ещё</button>'
     +'</div>';
 
-  html+='<div style="margin-top:6px"><a href="#" onclick="toggleQuickAdd(event)" style="font-size:11px;color:#666;text-decoration:none">+ добавить готовый аккаунт по VK-токену (без регистрации)</a>'
+  html+='<div style="margin-top:6px"><a href="#" onclick="toggleQuickAdd(event)" style="font-size:11px;color:var(--quiet);text-decoration:none">+ добавить готовый аккаунт по VK-токену (без регистрации)</a>'
     +'<div id="quickAddBox" style="display:none;margin-top:6px">'
-    +'<textarea id="quickAddTokens" rows="2" placeholder="VK access token(ы), по одному на строку — если уже зареганы на Twinby где-то ещё" style="width:100%;font-size:12px"></textarea>'
+    +'<textarea id="quickAddTokens" rows="2" placeholder="Введите VK-токены" style="width:100%;font-size:12px"></textarea>'
     +'<button type="button" class="go" style="margin-top:4px;height:32px;font-size:12px" onclick="quickAddAccounts()">Добавить</button>'
     +'</div></div>';
 
@@ -2864,23 +3423,21 @@ function renderPresetDetail(){
     html+='<p class="hint">Пока ни одной анкеты. Нажми «Зарегать ещё» выше.</p>';
   }
   for(const[label,a] of accs){
-    const onb=a.onboarded?'онбординг ✅':'онбординг ❌'+(a.onboard_error?' ('+esc(a.onboard_error)+')':'');
-    const deadBadge=a.dead?' · <span style="color:#f55">💀 мёртв'+(a.dead_reason?' ('+esc(a.dead_reason)+')':'')+'</span>':'';
-    html+='<div class="acct-card" style="cursor:pointer'+(a.dead?';opacity:0.55':'')+'" onclick="openAccountModal(\''+esc(label)+'\')">'
-      +'<div class="info"><b>'+esc(label)+'</b>'
-      +(a.name?' · '+esc(a.name):'')
-      +(a.user_id?' <span style="color:#666">(id: '+esc(a.user_id)+')</span>':'')
-      +'<br><span style="font-size:12px;color:#888">'+onb
-      +' · '+(a.video_verified?'видео ✅':'видео —')
-      +' · '+(a.city?esc(a.city):'город не задан')
-      +' · proxy '+(a.proxy?esc(a.proxy):'—')
-      +' · 👍 '+(a.likes_done||0)+' · 👎 '+(a.dislikes_done||0)
-      +' · '+(a.verified?'верификация ✅':'верификация ❌')
-      +' · '+(a.premium?'премиум ✅':'премиум ❌')
-      +deadBadge
-      +'</span></div>'
-      +'<button class="copy-btn" data-copy="'+esc(a.jwt||'')+'" onclick="event.stopPropagation();copyText(this)">Copy JWT</button>'
-      +'</div>';
+    const jwt=a.jwt||'';
+    const preview=jwt.length>61?jwt.slice(0,60)+'…':jwt;
+    html+='<div class="acct-card" data-account-label="'+esc(label)+'"'+(a.dead?' style="opacity:.55"':'')
+      +' onclick="openAccountModal(this.dataset.accountLabel)">'
+      +'<div class="info"><button class="account-title" type="button" aria-haspopup="dialog">'
+      +esc(a.name||a.preset||'Аккаунт')+'</button>'
+      +'<div class="account-summary">'
+      +'<span>Лайки <strong>'+esc(a.likes_done||'0')+'</strong></span>'
+      +'<span>Дизлайки <strong>'+esc(a.dislikes_done||'0')+'</strong></span>'
+      +renderAccountStatus('verified', 'Верификация', a.verified)
+      +renderAccountStatus('premium', 'Премиум', a.premium)
+      +'</div>'+(jwt?'<span class="jwt">JWT: '+esc(preview)+'</span>':'')+'</div>'
+      +'<div class="account-actions" onclick="event.stopPropagation()">'
+      +'<button class="copy-btn" type="button" data-copy="'+esc(jwt)+'" onclick="copyText(this)"'
+      +(jwt?'':' disabled')+'>Copy JWT</button></div></div>';
   }
 
   html+='</fieldset>';
@@ -2953,7 +3510,7 @@ function quickAddAccounts(){
 
 function logMsg(msg){
   const el=document.getElementById('presetLog');
-  el.style.cssText='padding:8px;background:#1a1a1a;border-radius:6px;font-size:13px;white-space:pre-wrap;max-height:300px;overflow-y:auto';
+  el.style.cssText='padding:8px;background:var(--field);border-radius:6px;font-size:13px;white-space:pre-wrap;max-height:300px;overflow-y:auto';
   el.innerText+=(el.innerText?'\n':'')+msg;
   el.scrollTop=el.scrollHeight;
 }
