@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request, redirect, send_from_directory
+from jinja2.utils import htmlsafe_json_dumps
 from curl_cffi import requests as cffi_requests
 from curl_cffi import CurlHttpVersion
 import httpx
@@ -1800,8 +1801,16 @@ async function saveAccountFlag(label, checkbox){
   }
 }
 
-async function copyText(button) {
-  const value = button.dataset.copy || '';
+function copyVkField(button) {
+  const field = button.dataset.vkField;
+  if (field !== 'vk_id' && field !== 'vk_pass') return;
+  const label = button.closest('[data-account-label]').dataset.accountLabel;
+  const accounts = typeof ACCOUNTS_CACHE === 'undefined' ? window._ACCOUNTS : ACCOUNTS_CACHE;
+  const value = accounts && Object.hasOwn(accounts, label) ? accounts[label][field] : '';
+  if (value) return copyText(button, String(value));
+}
+
+async function copyText(button, value = button.dataset.copy || '') {
   const original = button.dataset.original || button.textContent;
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -2300,6 +2309,8 @@ PAGE_ACCOUNTS = """
   </div>
   <div class="account-actions" onclick="event.stopPropagation()">
     <button class="copy-btn" type="button" data-copy="{{ acc.jwt or '' }}" onclick="copyText(this)" {{ 'disabled' if not acc.jwt }}>Copy JWT</button>
+    <button class="copy-btn" type="button" data-vk-field="vk_id" onclick="copyVkField(this)" {{ 'disabled' if not acc.vk_id }}>Копировать номер</button>
+    <button class="copy-btn" type="button" data-vk-field="vk_pass" onclick="copyVkField(this)" {{ 'disabled' if not acc.vk_pass }}>Копировать пароль</button>
     <form method="post" action="/accounts"><input type="hidden" name="label" value="{{ label }}">
       <button class="copy-btn danger" type="submit" name="action" value="remove">Удалить</button>
     </form>
@@ -3559,7 +3570,11 @@ function renderPresetDetail(){
       +'</div>'+(jwt?'<span class="jwt">JWT: '+esc(preview)+'</span>':'')+'</div>'
       +'<div class="account-actions" onclick="event.stopPropagation()">'
       +'<button class="copy-btn" type="button" data-copy="'+esc(jwt)+'" onclick="copyText(this)"'
-      +(jwt?'':' disabled')+'>Copy JWT</button></div></div>';
+      +(jwt?'':' disabled')+'>Copy JWT</button>'
+      +'<button class="copy-btn" type="button" data-vk-field="vk_id" onclick="copyVkField(this)"'
+      +(a.vk_id?'':' disabled')+'>Копировать номер</button>'
+      +'<button class="copy-btn" type="button" data-vk-field="vk_pass" onclick="copyVkField(this)"'
+      +(a.vk_pass?'':' disabled')+'>Копировать пароль</button></div></div>';
   }
 
   html+='</fieldset>';
@@ -4094,7 +4109,7 @@ _orig_render = _render.__wrapped__ if hasattr(_render, '__wrapped__') else None
 @app.after_request
 def inject_accounts_js(response):
     if response.content_type and 'text/html' in response.content_type:
-        js = f'<script>window._ACCOUNTS={json.dumps(ACCOUNTS, ensure_ascii=False)};</script>'
+        js = f'<script>window._ACCOUNTS={htmlsafe_json_dumps(ACCOUNTS, ensure_ascii=False)};</script>'
         data = response.get_data(as_text=True)
         data = data.replace('</body>', js + '</body>')
         response.set_data(data)
