@@ -17,6 +17,7 @@ import shutil
 import os
 import io
 import json
+import re
 import time
 import traceback
 import uuid
@@ -35,15 +36,56 @@ import httpx
 # This copy lives one directory below the shared project helpers.
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
-DATA_DIR = Path(os.environ.get("TWINBY_DATA_DIR") or APP_DIR).expanduser().resolve()
+ON_NORTHFLANK = bool(os.environ.get("NF_RESOURCE_ID"))
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import twinby_onboard as tw
 from cities import RUSSIAN_CITIES, get_cities_json
 
+def _has_persistent_mount(path: Path, mount_table: str) -> bool:
+    mount_points = {}
+    for row in mount_table.splitlines():
+        fields, separator, details = row.partition(" - ")
+        if not separator:
+            continue
+        escaped_path = fields.split()[4]
+        mount_path = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), escaped_path)
+        mount_points[Path(mount_path)] = details.split()[0]
+
+    for directory in (path, *path.parents):
+        if directory == directory.parent:
+            break
+        if directory in mount_points:
+            return mount_points[directory] not in {"tmpfs", "ramfs", "overlay"}
+    return False
+
+
+def _resolve_data_dir() -> Path:
+    configured_path = os.environ.get("TWINBY_DATA_DIR", "").strip()
+    default_path = "/var/data" if ON_NORTHFLANK else APP_DIR
+    directory = Path(configured_path or default_path).expanduser().resolve()
+    if ON_NORTHFLANK:
+        mounts = Path("/proc/self/mountinfo").read_text(encoding="utf-8", errors="surrogateescape")
+        if not _has_persistent_mount(directory, mounts):
+            raise RuntimeError(
+                f"Northflank: persistent volume not mounted at {directory}. "
+                "Check Volumes and TWINBY_DATA_DIR."
+            )
+    return directory
+
+
+DATA_DIR = _resolve_data_dir()
+
+
 def _initialize_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if ON_NORTHFLANK:
+        try:
+            with tempfile.TemporaryFile(dir=DATA_DIR):
+                pass
+        except OSError as exc:
+            raise RuntimeError(f"Northflank: cannot write to the volume at {DATA_DIR}: {exc}") from exc
     if DATA_DIR == APP_DIR:
         return
     for name in (
@@ -69,6 +111,8 @@ def _initialize_data_dir() -> None:
 
 
 _initialize_data_dir()
+if ON_NORTHFLANK:
+    print(f"Northflank: persistent storage ready at {DATA_DIR}", flush=True)
 app = Flask(__name__)
 
 # ---- конфиг (источник: HAR 2026-11-20) -------------------------------------------------------
@@ -100,7 +144,20 @@ PHOTO_ORDER = "0"   # НЕ проверено: сервер требует по�
 # Пул фото для анкет (вкладка Настройки): любое кол-во файлов, при регистрации
 # новой анкеты софт случайно берёт одно, если сервер отклоняет ("Bad photo") —
 # пробует следующее случайное, пока не найдёт подходящее или не исчерпает пул.
-PHOTO_POOL_DIR = Path(__file__).parent / "photo_pool"
+PHOTO_POOL_DIR = DATA_DIR / "photo_pool"
+legacy_photo_dir = APP_DIR / PHOTO_POOL_DIR.name
+if not PHOTO_POOL_DIR.exists() and legacy_photo_dir.is_dir():
+    with tempfile.TemporaryDirectory(dir=DATA_DIR) as temporary_dir:
+        staged_photos = Path(temporary_dir) / PHOTO_POOL_DIR.name
+        staged_photos.mkdir()
+        for photo in legacy_photo_dir.iterdir():
+            if photo.suffix.lower() in MIME and not photo.is_symlink() and photo.is_file():
+                shutil.copyfile(photo, staged_photos / photo.name)
+        try:
+            staged_photos.rename(PHOTO_POOL_DIR)
+        except OSError:
+            if not PHOTO_POOL_DIR.is_dir():
+                raise
 PHOTO_POOL_DIR.mkdir(exist_ok=True)
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 VIDEO_POOL_DIR = Path(__file__).parent / "video_pool"
@@ -806,12 +863,15 @@ def _save_onboarding_settings(data: dict) -> None:
     _write_json(SETTINGS_FILE, data)
 
 def _load_accounts() -> dict:
-    if ACCOUNTS_FILE.exists():
-        try:
-            return json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
+    try:
+        accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Cannot read saved accounts from {ACCOUNTS_FILE}") from exc
+    if not isinstance(accounts, dict) or any(not isinstance(account, dict) for account in accounts.values()):
+        raise RuntimeError(f"Invalid account records in {ACCOUNTS_FILE}")
+    return accounts
 
 def _save_accounts(data: dict):
     with ACCOUNTS_LOCK:
@@ -819,6 +879,8 @@ def _save_accounts(data: dict):
         _write_json(ACCOUNTS_FILE, snapshot)
 
 ACCOUNTS: dict[str, dict] = _load_accounts()
+if ON_NORTHFLANK:
+    print(f"Northflank: loaded {len(ACCOUNTS)} account records from {ACCOUNTS_FILE}", flush=True)
 ACCOUNTS_LOCK = threading.RLock()
 ACCOUNT_STAT_FIELDS = ("likes_done", "dislikes_done", "messages_sent")
 
@@ -4045,10 +4107,18 @@ def settings_photo_pool_upload():
             skipped += 1
             continue
         dest_name = Path(f.filename).name
-        dest = PHOTO_POOL_DIR / dest_name
-        if dest.exists():
-            dest = PHOTO_POOL_DIR / f"{uuid.uuid4().hex[:8]}_{dest_name}"
-        f.save(dest)
+        temp = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=PHOTO_POOL_DIR, delete=False) as file:
+                temp = Path(file.name)
+                f.save(file)
+            try:
+                os.link(temp, PHOTO_POOL_DIR / dest_name)
+            except FileExistsError:
+                os.link(temp, PHOTO_POOL_DIR / f"{uuid.uuid4().hex[:8]}_{dest_name}")
+        finally:
+            if temp is not None:
+                temp.unlink(missing_ok=True)
         added += 1
     return jsonify({"ok": True, "added": added, "skipped": skipped, "total": len(_list_photo_pool())})
 
