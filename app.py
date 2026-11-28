@@ -1020,6 +1020,19 @@ def _get_next_proxy() -> str:
     return _normalize_proxy(raw)
 
 
+def _pick_replacement_proxy(current: str) -> str:
+    """Следующий прокси из пула. Если в пуле больше одного — не тот, что уже стоит на аккаунте."""
+    if not PROXY_POOL:
+        return ""
+    current_norm = _normalize_proxy(current) if isinstance(current, str) else ""
+    chosen = ""
+    for _ in range(len(PROXY_POOL)):
+        chosen = _get_next_proxy()
+        if chosen and chosen != current_norm:
+            return chosen
+    return chosen
+
+
 def _proxy_pool_stats() -> dict:
     return {"total": len(PROXY_POOL)}
 
@@ -1867,6 +1880,7 @@ function openAccountModal(label){
     const a=all[label];
     if(!a){alert('Аккаунт не найден');return;}
     const box=document.getElementById('acctModalBox');
+    stopRedoPoll(box);
     box.dataset.accountLabel=label;
     box.innerHTML=''
       +'<button type="button" class="modal-close" id="acctModalCloseBtn" aria-label="Закрыть">&times;</button>'
@@ -1877,9 +1891,14 @@ function openAccountModal(label){
       +'<div class="mrow"><b>Пресет:</b> '+esc_(a.preset||'—')+' &nbsp; <b>Город:</b> '+esc_(a.city||'—')+'</div>'
       +'<div class="mrow"><b>Онбординг:</b> <span data-onboarding-status>'+esc_(onboardingStatusText(a.onboarded,a.onboard_error))+'</span>'
       +' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
-      +(!a.onboarded&&a.jwt?'<div class="mrow">'
-        +'<button type="button" class="copy-btn" data-check-onboarding>Проверить статус</button>'
-        +'<div class="hint" role="status" data-onboarding-result hidden></div></div>':'')
+      +(a.jwt?'<div class="mrow">'
+        +'<div class="actions-row">'
+        +(!a.onboarded?'<button type="button" class="copy-btn" data-check-onboarding>Проверить статус</button>':'')
+        +'<button type="button" class="go" data-redo-onboarding style="margin-top:0">Перепройти онбординг</button>'
+        +'</div>'
+        +'<div class="hint" role="status" data-onboarding-result hidden></div>'
+        +'<pre class="mono" data-onboarding-log hidden style="max-height:180px;overflow:auto;margin:8px 0 0"></pre>'
+        +'</div>':'')
       +'<div class="mrow"><label class="l" style="margin-top:12px">VK данные (id:pass:token)</label>'
       +'<textarea class="mono" readonly>'+esc_(a.vk_id||'')+':'+esc_(a.vk_pass||'')+':'+esc_(a.vk_token||'')+'</textarea></div>'
       +'<div class="mrow"><label class="l">JWT</label><textarea class="mono" readonly>'+esc_(a.jwt||'')+'</textarea></div>'
@@ -1891,6 +1910,18 @@ function openAccountModal(label){
     closeButton.addEventListener('click', closeAccountModal);
     const checkButton=box.querySelector('[data-check-onboarding]');
     checkButton?.addEventListener('click', ()=>checkAccountOnboarding(label, checkButton));
+    const redoButton=box.querySelector('[data-redo-onboarding]');
+    redoButton?.addEventListener('click', ()=>redoAccountOnboarding(label, redoButton));
+    if(redoButton){
+      fetch('/api/accounts/redo-onboarding?label='+encodeURIComponent(label))
+        .then(r=>r.json())
+        .then(data=>{
+          if(!data||!data.running||box.dataset.accountLabel!==label) return;
+          const current=box.querySelector('[data-redo-onboarding]');
+          if(current) watchRedoOnboarding(label, current);
+        })
+        .catch(()=>{});
+    }
     for(const checkbox of box.querySelectorAll('.account-flag input')){
       checkbox.checked=!!a[checkbox.name];
       checkbox.addEventListener('change', ()=>saveAccountFlag(label, checkbox));
@@ -1903,9 +1934,18 @@ function openAccountModal(label){
 }
 
 let accountModalTrigger=null;
+function stopRedoPoll(box){
+  if(box&&box._redoTimer){
+    clearInterval(box._redoTimer);
+    box._redoTimer=null;
+  }
+}
+
 function closeAccountModal(){
+  const box=document.getElementById('acctModalBox');
+  stopRedoPoll(box);
   document.getElementById('acctModal').style.display='none';
-  delete document.getElementById('acctModalBox').dataset.accountLabel;
+  delete box.dataset.accountLabel;
   accountModalTrigger?.focus();
   accountModalTrigger=null;
 }
@@ -1935,6 +1975,113 @@ async function checkAccountOnboarding(label, button){
   } catch {
     result.textContent=failure;
   } finally {
+    button.disabled=false;
+  }
+}
+
+function applyRedoStatus(label, data){
+  const box=document.getElementById('acctModalBox');
+  if(!box || box.dataset.accountLabel!==label) return;
+  const status=box.querySelector('[data-onboarding-status]');
+  const result=box.querySelector('[data-onboarding-result]');
+  const logBox=box.querySelector('[data-onboarding-log]');
+  const button=box.querySelector('[data-redo-onboarding]');
+  if(logBox && Array.isArray(data.log) && data.log.length){
+    logBox.hidden=false;
+    logBox.textContent=data.log.join('\\n');
+    logBox.scrollTop=logBox.scrollHeight;
+  }
+  if(data.running){
+    if(result){
+      result.hidden=false;
+      result.textContent='Меняю прокси и прохожу онбординг с нуля…';
+    }
+    if(button) button.disabled=true;
+    return;
+  }
+  stopRedoPoll(box);
+  if(button) button.disabled=false;
+  if(status) status.textContent=onboardingStatusText(data.onboarded, data.error);
+  if(result){
+    result.hidden=false;
+    if(data.onboarded){
+      result.textContent='Онбординг пройден'
+        +(data.proxy?' · прокси '+data.proxy:'')
+        +(data.city?' · '+data.city:'')
+        +(data.video_verified?' · видео подтверждено':'');
+    }else{
+      result.textContent=data.error?onboardingErrorText(data.error):'Онбординг не завершился.';
+    }
+  }
+  if(data.onboarded && data.name){
+    const title=box.querySelector('#acctModalTitle');
+    if(title) title.textContent=data.name;
+  }
+  const accounts=typeof ACCOUNTS_CACHE==='undefined'?window._ACCOUNTS:ACCOUNTS_CACHE;
+  if(accounts && Object.hasOwn(accounts, label)){
+    accounts[label].onboarded=!!data.onboarded;
+    accounts[label].onboard_error=data.error||'';
+    if(data.name) accounts[label].name=data.name;
+    if(data.city) accounts[label].city=data.city;
+    if(data.onboarded) accounts[label].video_verified=!!data.video_verified;
+  }
+}
+
+function watchRedoOnboarding(label, button){
+  const box=button.closest('.modal-box');
+  stopRedoPoll(box);
+  button.disabled=true;
+  const result=box.querySelector('[data-onboarding-result]');
+  result.hidden=false;
+  result.textContent='Меняю прокси и прохожу онбординг с нуля…';
+  box._redoTimer=setInterval(async()=>{
+    if(box.dataset.accountLabel!==label){
+      stopRedoPoll(box);
+      return;
+    }
+    try{
+      const response=await fetch('/api/accounts/redo-onboarding?label='+encodeURIComponent(label));
+      const data=await response.json();
+      if(!response.ok || data.ok===false){
+        stopRedoPoll(box);
+        button.disabled=false;
+        result.textContent=data.error||'Не удалось пройти онбординг.';
+        return;
+      }
+      applyRedoStatus(label, data);
+    }catch{
+      stopRedoPoll(box);
+      button.disabled=false;
+      result.textContent='Не удалось получить статус. Открой аккаунт ещё раз.';
+    }
+  }, 1000);
+}
+
+async function redoAccountOnboarding(label, button){
+  if(!confirm('Сменить прокси и пройти онбординг заново для этого аккаунта?')) return;
+  const box=button.closest('.modal-box');
+  const result=box.querySelector('[data-onboarding-result]');
+  const logBox=box.querySelector('[data-onboarding-log]');
+  button.disabled=true;
+  result.hidden=false;
+  result.textContent='Меняю прокси и прохожу онбординг с нуля…';
+  if(logBox){
+    logBox.hidden=true;
+    logBox.textContent='';
+  }
+  try{
+    const response=await fetch('/api/accounts/redo-onboarding',{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({label})
+    });
+    const data=await response.json();
+    if(!response.ok || data.ok===false){
+      result.textContent=data.error||'Не удалось запустить онбординг.';
+      button.disabled=false;
+      return;
+    }
+    watchRedoOnboarding(label, button);
+  }catch{
+    result.textContent='Не удалось запустить онбординг. Попробуй ещё раз.';
     button.disabled=false;
   }
 }
@@ -4493,6 +4640,193 @@ def api_accounts_check_onboarding():
                 return jsonify(ok=False, error="Не удалось сохранить статус аккаунта."), 500
             account.update(update)
     return jsonify(ok=True, onboarded=onboarded)
+
+
+REDO_JOBS_LOCK = threading.Lock()
+REDO_JOBS: dict[str, dict] = {}
+
+
+def _store_redo_result(label: str, onboard_ok: bool, onboard_error: str,
+                       video_ok: bool, city_name, settings: dict) -> None:
+    with ACCOUNTS_LOCK:
+        account = ACCOUNTS.get(label)
+        if account is None:
+            return
+        account["onboarded"] = onboard_ok
+        account["onboard_error"] = onboard_error
+        if city_name:
+            account["city"] = city_name
+        if onboard_ok:
+            account["video_verified"] = video_ok
+            settings_name = (settings.get("name") or "").strip()
+            if settings_name:
+                account["name"] = settings_name
+        _save_accounts(ACCOUNTS)
+
+
+def _redo_onboarding_worker(label: str, job: dict) -> None:
+    """Новый прокси и полный онбординг для уже сохранённого аккаунта."""
+    def tee(message):
+        with REDO_JOBS_LOCK:
+            job["log"].append(str(message))
+
+    settings = dict(DEFAULTS)
+    try:
+        with ACCOUNTS_LOCK:
+            account = ACCOUNTS.get(label)
+            if account is None:
+                job["error"] = "Аккаунт не найден."
+                return
+            token = account.get("jwt") or ""
+            current_proxy = account.get("proxy") or ""
+            preset = account.get("preset") or None
+        if not isinstance(token, str) or not token:
+            job["error"] = "У аккаунта нет JWT."
+            return
+
+        proxy = _pick_replacement_proxy(current_proxy if isinstance(current_proxy, str) else "")
+        if not proxy:
+            job["error"] = "В пуле нет прокси. Добавь прокси во вкладке «Настройки»."
+            return
+        proxy_label = proxy.split("@")[-1] if "@" in proxy else proxy
+        job["proxy"] = proxy_label
+        tee(f"новый прокси: {proxy_label}")
+
+        with ACCOUNTS_LOCK:
+            account = ACCOUNTS.get(label)
+            if account is None or (account.get("jwt") or "") != token:
+                job["error"] = "Данные аккаунта изменились. Открой его ещё раз."
+                return
+            account["proxy"] = proxy
+            account["onboard_error"] = ""
+            _save_accounts(ACCOUNTS)
+
+        settings.update(_load_onboarding_settings())
+
+        def run(jwt_token: str) -> dict:
+            client = _make_web_client(jwt_token, False, tee, proxy=proxy)
+
+            def save_city(name, acc_label=label):
+                with ACCOUNTS_LOCK:
+                    acc = ACCOUNTS.get(acc_label)
+                    if acc is not None:
+                        acc["city"] = name
+                        _save_accounts(ACCOUNTS)
+
+            return _run_full_onboarding(client, settings, tee, preset=preset, save_city=save_city)
+
+        try:
+            result = run(token)
+        except Exception as exc:
+            message = str(exc)
+            if not _is_token_expired_error(message):
+                _store_redo_result(label, False, message, False, None, settings)
+                job["error"] = message
+                return
+            tee("JWT истёк, обновляю через сохранённый VK-токен")
+            if not _refresh_account_jwt(label, tee):
+                _store_redo_result(label, False, message, False, None, settings)
+                job["error"] = message
+                return
+            with ACCOUNTS_LOCK:
+                account = ACCOUNTS.get(label)
+                if account is None:
+                    job["error"] = "Аккаунт не найден."
+                    return
+                account["proxy"] = proxy
+                token = account.get("jwt") or ""
+                _save_accounts(ACCOUNTS)
+            try:
+                result = run(token)
+            except Exception as exc:
+                message = str(exc)
+                _store_redo_result(label, False, message, False, None, settings)
+                job["error"] = message
+                return
+
+        onboard_ok = bool(result.get("ok"))
+        onboard_error = "" if onboard_ok else (result.get("error") or "Онбординг не завершился.")
+        video_ok = bool(result.get("video_verified"))
+        city_name = result.get("city")
+        _store_redo_result(label, onboard_ok, onboard_error, video_ok, city_name, settings)
+        job["onboarded"] = onboard_ok
+        job["error"] = onboard_error
+        job["video_verified"] = video_ok
+        job["city"] = city_name or ""
+        with ACCOUNTS_LOCK:
+            account = ACCOUNTS.get(label)
+            job["name"] = (account or {}).get("name") or ""
+    except Exception as exc:
+        job["error"] = str(exc)
+        try:
+            _store_redo_result(label, False, str(exc), False, None, settings)
+        except Exception:
+            pass
+    finally:
+        with REDO_JOBS_LOCK:
+            job["running"] = False
+
+
+def _redo_job_payload(job: dict | None) -> dict:
+    """Снимок задачи. Вызывать только под REDO_JOBS_LOCK, если job не None."""
+    if not job:
+        return {"ok": True, "running": False, "log": [], "onboarded": False, "error": "",
+                "proxy": "", "city": "", "name": "", "video_verified": False}
+    return {
+        "ok": True,
+        "running": bool(job["running"]),
+        "log": list(job["log"]),
+        "onboarded": bool(job.get("onboarded")),
+        "error": job.get("error") or "",
+        "proxy": job.get("proxy") or "",
+        "city": job.get("city") or "",
+        "name": job.get("name") or "",
+        "video_verified": bool(job.get("video_verified")),
+    }
+
+
+@app.route("/api/accounts/redo-onboarding", methods=["GET", "POST"])
+def api_accounts_redo_onboarding():
+    """Меняет прокси и заново проходит онбординг уже сохранённого аккаунта.
+    POST запускает задачу, GET отдаёт её статус и лог."""
+    if request.method == "GET":
+        label = (request.args.get("label") or "").strip()
+        if not label:
+            return jsonify(ok=False, error="Укажи аккаунт."), 400
+        with REDO_JOBS_LOCK:
+            return jsonify(_redo_job_payload(REDO_JOBS.get(label)))
+
+    data = request.get_json(silent=True) or {}
+    label = data.get("label") if isinstance(data, dict) else None
+    if not isinstance(label, str) or not label.strip():
+        return jsonify(ok=False, error="Укажи аккаунт."), 400
+    label = label.strip()
+
+    with ACCOUNTS_LOCK:
+        account = ACCOUNTS.get(label)
+        if account is None:
+            return jsonify(ok=False, error="Аккаунт не найден."), 404
+        if not account.get("jwt"):
+            return jsonify(ok=False, error="У аккаунта нет JWT."), 409
+
+    with REDO_JOBS_LOCK:
+        current = REDO_JOBS.get(label)
+        if current and current.get("running"):
+            return jsonify(ok=True, running=True)
+        job = {
+            "running": True,
+            "log": [],
+            "onboarded": False,
+            "error": "",
+            "proxy": "",
+            "city": "",
+            "name": "",
+            "video_verified": False,
+        }
+        REDO_JOBS[label] = job
+
+    threading.Thread(target=_redo_onboarding_worker, args=(label, job), daemon=True).start()
+    return jsonify(ok=True, running=True)
 
 
 # ---- Массовое лайканье по пресету: параллельно по всем анкетам пресета, -----
