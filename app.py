@@ -1203,7 +1203,6 @@ def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
     err_html = f'<p class="err">{error}</p>' if error else ""
     return (PAGE_LAYOUT.replace("{{PAGE_TITLE}}", title)
             .replace("{{TABS}}", "".join(links))
-            .replace("{{TWINBY_ONBOARDING_URL}}", tw.ORIGIN_HEADERS["Referer"])
             .replace("{{CONTENT}}", content)
             .replace("{{LOG}}", log_html)
             .replace("{{ERROR}}", err_html))
@@ -1878,10 +1877,9 @@ function openAccountModal(label){
       +'<div class="mrow"><b>Пресет:</b> '+esc_(a.preset||'—')+' &nbsp; <b>Город:</b> '+esc_(a.city||'—')+'</div>'
       +'<div class="mrow"><b>Онбординг:</b> <span data-onboarding-status>'+esc_(onboardingStatusText(a.onboarded,a.onboard_error))+'</span>'
       +' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
-      +(!a.onboarded?'<div class="mrow"><div class="account-actions">'
-        +'<a class="copy-btn" href="{{TWINBY_ONBOARDING_URL}}" target="_blank" rel="noopener noreferrer">Продолжить в Twinby</a>'
-        +(a.jwt?'<button type="button" class="copy-btn" data-check-onboarding>Проверить статус</button>':'')
-        +'</div><div class="hint" role="status" data-onboarding-result hidden></div></div>':'')
+      +(!a.onboarded&&a.jwt?'<div class="mrow">'
+        +'<button type="button" class="copy-btn" data-check-onboarding>Проверить статус</button>'
+        +'<div class="hint" role="status" data-onboarding-result hidden></div></div>':'')
       +'<div class="mrow"><label class="l" style="margin-top:12px">VK данные (id:pass:token)</label>'
       +'<textarea class="mono" readonly>'+esc_(a.vk_id||'')+':'+esc_(a.vk_pass||'')+':'+esc_(a.vk_token||'')+'</textarea></div>'
       +'<div class="mrow"><label class="l">JWT</label><textarea class="mono" readonly>'+esc_(a.jwt||'')+'</textarea></div>'
