@@ -1203,6 +1203,7 @@ def _page(tab: str, content: str, log: str = None, error: str = None) -> str:
     err_html = f'<p class="err">{error}</p>' if error else ""
     return (PAGE_LAYOUT.replace("{{PAGE_TITLE}}", title)
             .replace("{{TABS}}", "".join(links))
+            .replace("{{TWINBY_ONBOARDING_URL}}", tw.ORIGIN_HEADERS["Referer"])
             .replace("{{CONTENT}}", content)
             .replace("{{LOG}}", log_html)
             .replace("{{ERROR}}", err_html))
@@ -1851,7 +1852,15 @@ function onboardingErrorText(value){
   if (/server disconnected without sending a response/i.test(error)){
     return 'Соединение оборвалось. Результат последнего шага неизвестен. Проверь анкету в Twinby.';
   }
+  if (/the read operation timed out|read timed out/i.test(error)){
+    return 'Истекло время ожидания ответа. Результат последнего шага неизвестен.';
+  }
   return error;
+}
+
+function onboardingStatusText(onboarded, error){
+  if(onboarded) return 'Пройден';
+  return 'Не пройден'+(error?' · '+onboardingErrorText(error):'');
 }
 
 function openAccountModal(label){
@@ -1867,7 +1876,12 @@ function openAccountModal(label){
       +' &nbsp; <b>Дизлайков:</b> <span data-account-stat="dislikes_done">'+esc_(a.dislikes_done||'0')+'</span>'
       +' &nbsp; <b>Отправлено сообщений:</b> <span data-account-stat="messages_sent">'+esc_(a.messages_sent||'0')+'</span></div>'
       +'<div class="mrow"><b>Пресет:</b> '+esc_(a.preset||'—')+' &nbsp; <b>Город:</b> '+esc_(a.city||'—')+'</div>'
-      +'<div class="mrow"><b>Онбординг:</b> '+(a.onboarded?'Пройден':'Не пройден')+(a.onboard_error?' · '+esc_(onboardingErrorText(a.onboard_error)):'')+' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
+      +'<div class="mrow"><b>Онбординг:</b> <span data-onboarding-status>'+esc_(onboardingStatusText(a.onboarded,a.onboard_error))+'</span>'
+      +' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
+      +(!a.onboarded?'<div class="mrow"><div class="account-actions">'
+        +'<a class="copy-btn" href="{{TWINBY_ONBOARDING_URL}}" target="_blank" rel="noopener noreferrer">Продолжить в Twinby</a>'
+        +(a.jwt?'<button type="button" class="copy-btn" data-check-onboarding>Проверить статус</button>':'')
+        +'</div><div class="hint" role="status" data-onboarding-result hidden></div></div>':'')
       +'<div class="mrow"><label class="l" style="margin-top:12px">VK данные (id:pass:token)</label>'
       +'<textarea class="mono" readonly>'+esc_(a.vk_id||'')+':'+esc_(a.vk_pass||'')+':'+esc_(a.vk_token||'')+'</textarea></div>'
       +'<div class="mrow"><label class="l">JWT</label><textarea class="mono" readonly>'+esc_(a.jwt||'')+'</textarea></div>'
@@ -1877,6 +1891,8 @@ function openAccountModal(label){
       +'<p class="err" role="status" hidden></p></div>';
     const closeButton=document.getElementById('acctModalCloseBtn');
     closeButton.addEventListener('click', closeAccountModal);
+    const checkButton=box.querySelector('[data-check-onboarding]');
+    checkButton?.addEventListener('click', ()=>checkAccountOnboarding(label, checkButton));
     for(const checkbox of box.querySelectorAll('.account-flag input')){
       checkbox.checked=!!a[checkbox.name];
       checkbox.addEventListener('change', ()=>saveAccountFlag(label, checkbox));
@@ -1898,6 +1914,32 @@ function closeAccountModal(){
 document.addEventListener('keydown', event => {
   if(event.key==='Escape' && document.getElementById('acctModal').style.display==='flex') closeAccountModal();
 });
+
+async function checkAccountOnboarding(label, button){
+  const box=button.closest('.modal-box');
+  const status=box.querySelector('[data-onboarding-status]');
+  const result=box.querySelector('[data-onboarding-result]');
+  const failure='Не удалось проверить статус. Попробуй ещё раз.';
+  button.disabled=true;
+  result.textContent='Проверяю статус в Twinby…';
+  result.hidden=false;
+  try {
+    const response=await fetch('/api/accounts/onboarding-status',{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({label})
+    });
+    const data=await response.json();
+    if(!response.ok || !data.ok){
+      result.textContent=data.error||failure;
+      return;
+    }
+    status.textContent=onboardingStatusText(data.onboarded);
+    result.textContent=data.onboarded?'Статус обновлён.':'Продолжи онбординг в Twinby под этим аккаунтом и проверь статус снова.';
+  } catch {
+    result.textContent=failure;
+  } finally {
+    button.disabled=false;
+  }
+}
 
 async function saveAccountFlag(label, checkbox){
   const flag=checkbox.name;
@@ -4389,6 +4431,70 @@ def api_accounts_set_flags(label):
         ACCOUNTS[label]["premium"] = bool(data["premium"])
     _save_accounts(ACCOUNTS)
     return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/onboarding-status", methods=["POST"])
+def api_accounts_check_onboarding():
+    """Сверяет локальный статус онбординга с профилем в Twinby."""
+    data = request.get_json(silent=True)
+    label = data.get("label") if isinstance(data, dict) else None
+    if not isinstance(label, str) or not label:
+        return jsonify(ok=False, error="Укажи аккаунт."), 400
+
+    with ACCOUNTS_LOCK:
+        account = ACCOUNTS.get(label)
+        if account is None:
+            return jsonify(ok=False, error="Аккаунт не найден."), 404
+        before = account.copy()
+
+    token = before.get("jwt")
+    if not isinstance(token, str) or not token:
+        return jsonify(ok=False, error="У аккаунта нет JWT."), 409
+    proxy = before.get("proxy") or ""
+    if not isinstance(proxy, str):
+        return jsonify(ok=False, error="В аккаунте сохранён некорректный прокси."), 409
+
+    try:
+        with httpx.Client(
+            base_url=tw.BASE, timeout=15, proxy=_normalize_proxy(proxy) or None,
+            headers={"User-Agent": tw.UA, "Accept": "application/json",
+                     "Authorization": f"{tw.AUTH_SCHEME} {token}", **tw.ORIGIN_HEADERS},
+        ) as client:
+            response = client.get(tw.API["me"])
+            response.raise_for_status()
+    except httpx.TimeoutException:
+        return jsonify(ok=False, error="Истекло время ожидания ответа Twinby. Попробуй ещё раз."), 504
+    except httpx.HTTPStatusError as exc:
+        return jsonify(ok=False, error=f"Twinby вернул HTTP {exc.response.status_code}."), 502
+    except (httpx.RequestError, httpx.InvalidURL, ImportError, ValueError):
+        return jsonify(ok=False, error="Не удалось подключиться к Twinby. Проверь сеть и прокси аккаунта."), 502
+
+    try:
+        profile = response.json()
+    except ValueError:
+        profile = None
+    onboarded = profile.get("onboardingCompleted") if isinstance(profile, dict) else None
+    if not isinstance(onboarded, bool):
+        return jsonify(ok=False, error="В ответе Twinby нет статуса онбординга."), 502
+
+    saved_id, returned_id = before.get("user_id"), profile.get("id")
+    if saved_id and returned_id and str(saved_id) != str(returned_id):
+        return jsonify(ok=False, error="Twinby вернул профиль другого аккаунта."), 409
+
+    with ACCOUNTS_LOCK:
+        if ACCOUNTS.get(label) is not account or any(
+            account.get(key) != before.get(key)
+            for key in ("jwt", "proxy", "user_id", "onboarded", "onboard_error")
+        ):
+            return jsonify(ok=False, error="Данные аккаунта изменились. Проверь статус снова."), 409
+        if account.get("onboarded") is not onboarded or account.get("onboard_error"):
+            update = {"onboarded": onboarded, "onboard_error": ""}
+            try:
+                _save_accounts({**ACCOUNTS, label: {**account, **update}})
+            except OSError:
+                return jsonify(ok=False, error="Не удалось сохранить статус аккаунта."), 500
+            account.update(update)
+    return jsonify(ok=True, onboarded=onboarded)
 
 
 # ---- Массовое лайканье по пресету: параллельно по всем анкетам пресета, -----
