@@ -25,6 +25,7 @@ import base64
 import sys
 import threading
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request, redirect, send_from_directory
@@ -883,6 +884,40 @@ if ON_NORTHFLANK:
     print(f"Northflank: loaded {len(ACCOUNTS)} account records from {ACCOUNTS_FILE}", flush=True)
 ACCOUNTS_LOCK = threading.RLock()
 ACCOUNT_STAT_FIELDS = ("likes_done", "dislikes_done", "messages_sent")
+ACCOUNT_IMPORT_LOCK = threading.Lock()
+
+
+def _single_account_import(handler):
+    @wraps(handler)
+    def run(*args, **kwargs):
+        if not ACCOUNT_IMPORT_LOCK.acquire(blocking=False):
+            return jsonify(ok=True, running=True)
+        try:
+            return handler(*args, **kwargs)
+        finally:
+            ACCOUNT_IMPORT_LOCK.release()
+
+    return run
+
+
+def _find_saved_account(*, user_id="", vk_token="", vk_id=""):
+    with ACCOUNTS_LOCK:
+        accounts = ACCOUNTS.copy()
+        for field, value in (("user_id", user_id), ("vk_token", vk_token), ("vk_id", vk_id)):
+            wanted = str(value or "").strip()
+            if wanted:
+                match = next(((label, account) for label, account in accounts.items()
+                              if str(account.get(field) or "").strip() == wanted), None)
+                if match is not None:
+                    return match
+    return None
+
+
+def _saved_account_result(match) -> dict:
+    label, account = match
+    return {"ok": True, "existing": True, "label": label, "name": account.get("name", ""),
+            "user_id": account.get("user_id", ""), "preset": account.get("preset", ""),
+            "city": account.get("city", "")}
 
 
 def _increment_account_stat(label: str, acc: dict, field: str, tee) -> None:
@@ -1070,6 +1105,29 @@ for _entry in MESSAGED_CHATS.values():
         _legacy_message_totals[_label] = _legacy_message_totals.get(_label, 0) + 1
 for _label, _acc in ACCOUNTS.items():
     _acc.setdefault("messages_sent", _legacy_message_totals.get(_label, 0))
+
+
+def _remove_identical_account_rows() -> None:
+    referenced = {entry.get("by") for history in (SEEN_USERS, MESSAGED_CHATS)
+                  for entry in history.values() if isinstance(entry, dict)}
+    retained = {}
+    signatures = set()
+    for label, account in ACCOUNTS.items():
+        if any(account.get(field) for field in ("user_id", "vk_id", "vk_token")):
+            signature = json.dumps(account, sort_keys=True, ensure_ascii=False)
+            if signature in signatures and label not in referenced:
+                continue
+            signatures.add(signature)
+        retained[label] = account
+    removed = len(ACCOUNTS) - len(retained)
+    if removed:
+        _save_accounts(retained)
+        ACCOUNTS.clear()
+        ACCOUNTS.update(retained)
+        print(f"Removed {removed} identical account records.", flush=True)
+
+
+_remove_identical_account_rows()
 
 
 def _mark_messaged(chat_id: str, by: str, text: str) -> None:
@@ -1575,6 +1633,7 @@ button:disabled { opacity: .5; cursor: default; }
   padding: 0; border: 0; background: none; color: var(--ink); font-weight: 650;
   text-align: start; overflow-wrap: anywhere;
 }
+.account-number { color: var(--muted); font-variant-numeric: tabular-nums; }
 .account-summary, .account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .account-summary { margin-top: 8px; color: var(--muted); font-size: 13px; }
 .account-summary strong { color: var(--ink); font-weight: 600; }
@@ -1787,6 +1846,14 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 document.addEventListener('visibilitychange', refreshAccountStats);
 
+function onboardingErrorText(value){
+  const error=String(value||'');
+  if (/server disconnected without sending a response/i.test(error)){
+    return 'Соединение оборвалось. Результат последнего шага неизвестен. Проверь анкету в Twinby.';
+  }
+  return error;
+}
+
 function openAccountModal(label){
   fetch('/api/accounts').then(r=>r.json()).then(all=>{
     const a=all[label];
@@ -1800,7 +1867,7 @@ function openAccountModal(label){
       +' &nbsp; <b>Дизлайков:</b> <span data-account-stat="dislikes_done">'+esc_(a.dislikes_done||'0')+'</span>'
       +' &nbsp; <b>Отправлено сообщений:</b> <span data-account-stat="messages_sent">'+esc_(a.messages_sent||'0')+'</span></div>'
       +'<div class="mrow"><b>Пресет:</b> '+esc_(a.preset||'—')+' &nbsp; <b>Город:</b> '+esc_(a.city||'—')+'</div>'
-      +'<div class="mrow"><b>Онбординг:</b> '+(a.onboarded?'Пройден':'Не пройден')+(a.onboard_error?' · '+esc_(a.onboard_error):'')+' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
+      +'<div class="mrow"><b>Онбординг:</b> '+(a.onboarded?'Пройден':'Не пройден')+(a.onboard_error?' · '+esc_(onboardingErrorText(a.onboard_error)):'')+' &nbsp; <b>Видео:</b> '+(a.video_verified?'Подтверждено':'—')+'</div>'
       +'<div class="mrow"><label class="l" style="margin-top:12px">VK данные (id:pass:token)</label>'
       +'<textarea class="mono" readonly>'+esc_(a.vk_id||'')+':'+esc_(a.vk_pass||'')+':'+esc_(a.vk_token||'')+'</textarea></div>'
       +'<div class="mrow"><label class="l">JWT</label><textarea class="mono" readonly>'+esc_(a.jwt||'')+'</textarea></div>'
@@ -2129,6 +2196,7 @@ PAGE_SETTINGS = r"""
     регистрация идёт по готовому VK access token; формат на будущее, если добавим вход по логину+паролю).
     Можно вставлять и просто токен без id/pass.</p>
   {% if vk_added is not none %}<p class="ok">Добавлено новых аккаунтов в пул: {{ vk_added }}.</p>{% endif %}
+  {% if vk_existing %}<p class="hint">Уже сохранены в исходных пресетах: {{ vk_existing }}.</p>{% endif %}
   {% if vk_cleared %}<p class="ok">Пул очищен, удалено токенов: {{ vk_cleared }}.</p>{% endif %}
   <p class="hint">В пуле сейчас: {{ vk_stats.total }} всего · {{ vk_stats.available }} доступно ·
     {{ vk_stats.used }} использовано.</p>
@@ -2359,7 +2427,7 @@ PAGE_ACCOUNTS = """
 {% for label, acc in accounts.items() %}
 <div class="acct-card" data-account-label="{{ label }}" onclick="openAccountModal(this.dataset.accountLabel)">
   <div class="info">
-    <button class="account-title" type="button" aria-haspopup="dialog">{{ acc.name or acc.preset or 'Аккаунт' }}</button>
+    <button class="account-title" type="button" aria-haspopup="dialog"><span class="account-number">№ {{ loop.index }} · </span>{{ acc.name or acc.preset or 'Аккаунт' }}</button>
     <div class="account-summary">
       <span>Лайки <strong data-account-stat="likes_done">{{ acc.likes_done or 0 }}</strong></span>
       <span>Дизлайки <strong data-account-stat="dislikes_done">{{ acc.dislikes_done or 0 }}</strong></span>
@@ -2580,7 +2648,7 @@ class _DictForm:
         return v if isinstance(v, list) else []
 
 
-def _run_full_onboarding(c, settings: dict, tee, preset: str | None = None) -> dict:
+def _run_full_onboarding(c, settings: dict, tee, preset: str | None = None, *, save_city=None) -> dict:
     """Полная регистрация анкеты (как раньше делала вкладка «Онбординг»),
     но данные берутся из Settings (одинаковые для всех анкет пресета), фото —
     случайное из пула с ретраями, видео-верификация — тоже из пула, до 3
@@ -2618,6 +2686,8 @@ def _run_full_onboarding(c, settings: dict, tee, preset: str | None = None) -> d
     if city:
         c.call("PATCH", tw.API["me"], json={"location": f"POINT({city['lat']} {city['lon']})",
                                             "nameCity": city["name"]})
+        if save_city is not None:
+            save_city(city["name"])
         tee(f"  город (случайно из выбранных в Настройках): {city['name']}")
 
     if not _try_random_photo(c, tee):
@@ -3477,7 +3547,10 @@ function renderAccountStatus(flag, label, enabled){
     +label+' <strong>'+accountStatusText(enabled)+'</strong></span>';
 }
 
+let accountImportPending=false;
+
 function createAndRegister(){
+  if(accountImportPending){logMsg('Добавление аккаунтов уже выполняется.');return;}
   const name=document.getElementById('newPresetName').value.trim();
   const count=parseInt(document.getElementById('newPresetCount').value)||0;
   if(!name){alert('Введи имя пресета');return;}
@@ -3488,15 +3561,19 @@ function createAndRegister(){
 }
 
 function runBulkRegister(name,count){
+  if(accountImportPending){logMsg('Добавление аккаунтов уже выполняется.');return;}
+  accountImportPending=true;
   logMsg('--- '+name+': регистрирую '+count+' анкет(у) из пула VK-токенов (VK→JWT, онбординг, фото, видео) ---');
   fetch('/api/bulk-register',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({count:count,label_prefix:name})})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){logMsg('Ошибка: '+(d.error||'unknown'));return;}
+    if(d.running){logMsg('Предыдущий запуск ещё выполняется.');return;}
     logMsg('Зарегано '+d.registered+' из '+d.requested+' запрошенных:');
     (d.results||[]).forEach(r=>{
+      if(r.existing){logSavedAccount(r);return;}
       if(r.ok){
-        const onb=r.onboarded?'онбординг ✅':'онбординг ❌ ('+(r.onboard_error||'?')+')';
+        const onb=r.onboarded?'онбординг ✅':'онбординг ❌ ('+(onboardingErrorText(r.onboard_error)||'?')+')';
         const vid=r.video_verified?'видео ✅':'видео —';
         logMsg('  '+(r.onboarded?'✅':'⚠️')+' '+r.label+' — '+(r.name||'без имени')+' (id='+r.user_id+') · '+(r.city||'город не задан')+' · '+onb+' · '+vid+' · proxy '+(r.proxy||'—'));
       } else {
@@ -3505,7 +3582,13 @@ function runBulkRegister(name,count){
     });
     loadVkPoolStats();
     loadAccountsCache(()=>{renderPresets();renderPresetDetail();});
-  }).catch(e=>logMsg('Ошибка запроса: '+e));
+  }).catch(e=>logMsg('Ошибка запроса: '+e))
+    .finally(()=>{accountImportPending=false;});
+}
+
+function logSavedAccount(account){
+  logMsg('Уже в списке: '+account.label+(account.preset?' · пресет '+account.preset:'')
+    +(account.city?' · '+account.city:''));
 }
 
 function loadPresets(){
@@ -3616,12 +3699,13 @@ function renderPresetDetail(){
   if(!accs.length){
     html+='<p class="hint">Пока ни одной анкеты. Нажми «Зарегать ещё» выше.</p>';
   }
-  for(const[label,a] of accs){
+  for(const [index,[label,a]] of accs.entries()){
     const jwt=a.jwt||'';
     const preview=jwt.length>61?jwt.slice(0,60)+'…':jwt;
     html+='<div class="acct-card" data-account-label="'+esc(label)+'"'+(a.dead?' style="opacity:.55"':'')
       +' onclick="openAccountModal(this.dataset.accountLabel)">'
       +'<div class="info"><button class="account-title" type="button" aria-haspopup="dialog">'
+      +'<span class="account-number">№ '+(index+1)+' · </span>'
       +esc(a.name||a.preset||'Аккаунт')+'</button>'
       +'<div class="account-summary">'
       +'<span>Лайки <strong data-account-stat="likes_done">'+esc(a.likes_done||'0')+'</strong></span>'
@@ -3689,23 +3773,28 @@ function toggleQuickAdd(ev){
 }
 
 function quickAddAccounts(){
+  if(accountImportPending){logMsg('Добавление аккаунтов уже выполняется.');return;}
   if(!OPEN_PRESET){alert('Сначала открой пресет');return;}
   const raw=document.getElementById('quickAddTokens').value;
   const tokens=raw.split('\n').map(s=>s.trim()).filter(s=>s);
   if(!tokens.length){alert('Вставь хотя бы один VK-токен');return;}
+  accountImportPending=true;
   logMsg('--- '+OPEN_PRESET+': добавляю '+tokens.length+' готовый(х) аккаунт(ов) по VK-токену, без регистрации ---');
   fetch('/api/accounts/quick-add',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({preset:OPEN_PRESET,tokens:tokens})})
   .then(r=>r.json()).then(d=>{
     if(!d.ok){logMsg('Ошибка: '+(d.error||'unknown'));return;}
+    if(d.running){logMsg('Предыдущий запуск ещё выполняется.');return;}
     logMsg('Добавлено '+d.added+' из '+d.requested+':');
     (d.results||[]).forEach(r=>{
+      if(r.existing){logSavedAccount(r);return;}
       if(r.ok) logMsg('  ✅ '+r.label+' — '+(r.name||'без имени')+' (id='+r.user_id+')');
       else logMsg('  ❌ '+(r.token||'')+' — '+(r.error||'ошибка'));
     });
     document.getElementById('quickAddTokens').value='';
     loadAccountsCache(()=>{renderPresets();renderPresetDetail();});
-  }).catch(e=>logMsg('Ошибка запроса: '+e));
+  }).catch(e=>logMsg('Ошибка запроса: '+e))
+    .finally(()=>{accountImportPending=false;});
 }
 
 function logMsg(msg){
@@ -3819,6 +3908,7 @@ def api_vk_pool_stats():
 
 
 @app.route("/api/bulk-register", methods=["POST"])
+@_single_account_import
 def api_bulk_register():
     """Берёт из пула VK-токенов (Настройки) до `count` неиспользованных,
     превращает каждый в Twinby JWT (_register_vk_token) и добавляет как
@@ -3855,13 +3945,21 @@ def api_bulk_register():
         if registered >= count:
             break
         token = entry["token"]
-        proxy = _get_next_proxy()  # закрепляется за аккаунтом навсегда
+        known = _find_saved_account(vk_token=token, vk_id=entry.get("id"))
+        if known is None:
+            proxy = _get_next_proxy()  # закрепляется за аккаунтом навсегда
 
-        r = _register_vk_token(token, proxy=proxy)
-        if not r.get("ok"):
-            entry["error"] = r.get("error")
-            entry["used"] = True  # плохой/протухший токен — больше не пробуем его повторно
-            results.append({"ok": False, "error": r.get("error"), "token": token[:24] + "..."})
+            r = _register_vk_token(token, proxy=proxy)
+            if not r.get("ok"):
+                entry["error"] = r.get("error")
+                entry["used"] = True  # плохой/протухший токен — больше не пробуем его повторно
+                results.append({"ok": False, "error": r.get("error"), "token": token[:24] + "..."})
+                continue
+            known = _find_saved_account(user_id=r.get("user_id"))
+        if known is not None:
+            result = _saved_account_result(known)
+            entry.update(used=True, user_id=result["user_id"], name=result["name"], error=None)
+            results.append(result)
             continue
 
         # уникальный label: предпочитаем user_id, иначе счётчик
@@ -3897,7 +3995,9 @@ def api_bulk_register():
         onboard_ok, onboard_error, video_ok, city_name = True, "", False, None
         try:
             c = _make_web_client(r["jwt"], False, tee, proxy=proxy)
-            res = _run_full_onboarding(c, settings, tee, preset=label_prefix)
+            account = ACCOUNTS[label]
+            res = _run_full_onboarding(c, settings, tee, preset=label_prefix,
+                                       save_city=lambda name: account.update(city=name))
             onboard_ok = bool(res.get("ok"))
             onboard_error = res.get("error", "") if not onboard_ok else ""
             video_ok = bool(res.get("video_verified"))
@@ -3909,6 +4009,7 @@ def api_bulk_register():
         ACCOUNTS[label]["onboarded"] = onboard_ok
         ACCOUNTS[label]["onboard_error"] = onboard_error
         ACCOUNTS[label]["video_verified"] = video_ok
+        city_name = city_name or ACCOUNTS[label].get("city")
         if city_name:
             ACCOUNTS[label]["city"] = city_name
         results.append({
@@ -3930,6 +4031,7 @@ def api_bulk_register():
 
 
 @app.route("/api/accounts/quick-add", methods=["POST"])
+@_single_account_import
 def api_accounts_quick_add():
     """Добавляет УЖЕ готовый (зарегистрированный и настроенный где-то ранее)
     Twinby-аккаунт по голому VK access token'у — БЕЗ прогона онбординга,
@@ -3954,10 +4056,16 @@ def api_accounts_quick_add():
     results = []
     added = 0
     for token in tokens:
-        proxy = _get_next_proxy()  # закрепляется за аккаунтом навсегда, как и при обычной регистрации
-        r = _register_vk_token(token, proxy=proxy)
-        if not r.get("ok"):
-            results.append({"ok": False, "error": r.get("error"), "token": token[:24] + "..."})
+        known = _find_saved_account(vk_token=token)
+        if known is None:
+            proxy = _get_next_proxy()  # закрепляется за аккаунтом навсегда, как и при обычной регистрации
+            r = _register_vk_token(token, proxy=proxy)
+            if not r.get("ok"):
+                results.append({"ok": False, "error": r.get("error"), "token": token[:24] + "..."})
+                continue
+            known = _find_saved_account(user_id=r.get("user_id"))
+        if known is not None:
+            results.append(_saved_account_result(known))
             continue
         label = f"{preset}_{r.get('user_id') or uuid.uuid4().hex[:8]}"
         n = 2
@@ -4031,26 +4139,35 @@ def settings_cities_save():
 def settings_vk_pool_add():
     """Добавляет VK-аккаунты (строки id:pass:token, допускается и просто token) в пул для Пресетов."""
     raw = request.form.get("vk_tokens_bulk", "")
-    existing = {t.get("token") for t in VK_POOL}
     added = 0
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        entry = _parse_vk_pool_line(line)
-        token = entry["token"]
-        if not token or token in existing:
-            continue
-        VK_POOL.append({"id": entry["id"], "pass": entry["pass"], "token": token,
-                        "used": False, "user_id": "", "name": "", "error": None})
-        existing.add(token)
-        added += 1
-    if added:
-        _save_vk_pool(VK_POOL)
+    already_saved = set()
+    with ACCOUNTS_LOCK:
+        existing = {entry.get("token") for entry in VK_POOL}
+        pending_ids = {entry["id"] for entry in VK_POOL if entry.get("id") and not entry.get("used")}
+        for line in raw.splitlines():
+            entry = _parse_vk_pool_line(line)
+            token, vk_id = entry["token"].strip(), entry["id"].strip()
+            if not token:
+                continue
+            known = _find_saved_account(vk_token=token, vk_id=vk_id)
+            if known is not None:
+                already_saved.add(known[0])
+                continue
+            if token in existing or vk_id in pending_ids:
+                continue
+            VK_POOL.append({"id": vk_id, "pass": entry["pass"], "token": token,
+                            "used": False, "user_id": "", "name": "", "error": None})
+            existing.add(token)
+            if vk_id:
+                pending_ids.add(vk_id)
+            added += 1
+        if added:
+            _save_vk_pool(VK_POOL)
 
     f = dict(DEFAULTS)
     f.update(_load_onboarding_settings())
     return _render(PAGE_SETTINGS, "settings", None, f=f, saved=False, vk_added=added, vk_stats=_vk_pool_stats(),
-                   proxy_added=None, proxy_stats=_proxy_pool_stats())
+                   proxy_added=None, proxy_stats=_proxy_pool_stats(), vk_existing=len(already_saved))
 
 
 @app.route("/settings/vk-pool/clear", methods=["POST"])
